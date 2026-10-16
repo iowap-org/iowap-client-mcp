@@ -7,21 +7,45 @@ Destructive surface is deliberately absent — see the project DECISIONS.md.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
+import re
+import shutil
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from iowap_client_mcp.nodecli import run_node_cli, run_node_cli_text
+from iowap_client_mcp.envelope import find_first_completed_stage_result
+from iowap_client_mcp.nodecli import NodeCliError, run_node_cli, run_node_cli_text
 
 __all__ = [
+    "ALL_TOOLS",
     "READ_TOOLS",
+    "WRITE_TOOLS",
+    "artifact_download",
     "capabilities_list",
     "docs",
     "node_list",
     "register_read_tools",
+    "register_write_tools",
     "relay_status",
+    "task_result",
+    "task_submit",
 ]
 
 READ_TOOLS = ("relay_status", "node_list", "capabilities_list", "docs")
+WRITE_TOOLS = ("task_submit", "task_result", "artifact_download")
+ALL_TOOLS = READ_TOOLS + WRITE_TOOLS
+
+# Node IDs are uppercase alphanumeric tokens (e.g. NODE23A4, AMKJA9AE — NOT
+# strict base32: digits 0-9 all occur). A node NAME passed as --owner crashes
+# the relay with a 500 — validate before spawning.
+_NODE_ID_RE = re.compile(r"^[A-Z0-9]{3,16}$")
+_CAPABILITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WAIT_CAP = 90
+_POLL_INTERVAL = 2.0
 
 
 async def relay_status() -> dict[str, Any]:
@@ -136,3 +160,197 @@ def register_read_tools(server: Any) -> None:
             "page: available pages. With page: that page's markdown content."
         ),
     )(docs)
+
+
+def _find_iowap_task() -> str | None:
+    """Locate the iowap-task session-bridge (reuse, not reimplementation)."""
+    found = shutil.which("iowap-task")
+    if found:
+        return found
+    candidate = Path.home() / ".local/bin/iowap-task"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
+async def _track_task(task_id: str, delegated: bool) -> dict[str, Any]:
+    """Best-effort merge into the shared track store via the iowap-task bridge.
+
+    The bridge owns the flock-protected store (same file as the desktop
+    plugin backend) — this toolkit never writes the schema itself.
+    """
+    bridge = _find_iowap_task()
+    if not bridge:
+        return {"tracked": False, "reason": "iowap-task bridge not installed"}
+    args = [bridge, "track", task_id]
+    if delegated:
+        args.append("--delegated")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=str(Path.home()),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=20)
+        return {"tracked": proc.returncode == 0}
+    except (OSError, TimeoutError) as exc:  # tracking must never break a submit
+        return {"tracked": False, "reason": f"bridge call failed: {exc}"}
+
+
+def _stage_arg(capability: str, payload: dict[str, Any]) -> str:
+    if not _CAPABILITY_RE.match(capability):
+        raise ValueError(
+            f"invalid capability name {capability!r} (pattern: "
+            "letters/digits with . _ - separators)"
+        )
+    return f"{capability}:{json.dumps(payload, separators=(',', ':'))}"
+
+
+async def task_submit(
+    capability: str,
+    payload: dict[str, Any],
+    owner_node_id: str | None = None,
+    wait_seconds: int = 0,
+) -> dict[str, Any]:
+    """Submit a task against a capability; optionally wait for completion.
+
+    ``payload`` must match the capability's ``input_schema`` (see
+    ``capabilities_list``). ``owner_node_id`` directs the task to one node —
+    it must be a node ID from ``node_list``/``capabilities_list`` (a node
+    NAME would crash the relay with a 500). Owner-directed tasks are
+    readable only by the owner node; results are claimed by that node.
+
+    ``wait_seconds`` (capped at 90) polls for a short while; long-running
+    tasks should be polled via ``task_result`` instead.
+    """
+    if not isinstance(payload, dict):
+        raise TypeError("payload must be a JSON object (dict)")
+    if owner_node_id and not _NODE_ID_RE.match(owner_node_id):
+        raise ValueError(
+            f"owner_node_id {owner_node_id!r} is not a node ID — use node_list "
+            "(IDs are uppercase alphanumeric tokens like NODE23A4; a node NAME breaks the relay)"
+        )
+    wait = max(0, min(int(wait_seconds), _WAIT_CAP))
+
+    args = ["task", "submit", "--stage", _stage_arg(capability, payload)]
+    if owner_node_id:
+        args += ["--owner", owner_node_id]
+    submit_payload = await run_node_cli(args, timeout=30.0)
+    task_id = submit_payload.get("task_id")
+
+    result: dict[str, Any] = {
+        "task_id": task_id,
+        "status": submit_payload.get("status"),
+        "owner_node_id": owner_node_id,
+    }
+    result["tracking"] = await _track_task(task_id, delegated=bool(owner_node_id))
+
+    if not wait or not task_id:
+        return result
+
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_POLL_INTERVAL)
+        status = await task_result(task_id)
+        if status.get("status") in ("completed", "failed", "timed_out", "cancelled"):
+            return {
+                **result,
+                "status": status.get("status"),
+                "result": status.get("result"),
+                "waited_seconds": round(wait - (deadline - time.monotonic()), 1),
+            }
+    return {
+        **result,
+        "status": "pending",
+        "result": None,
+        "waited_seconds": wait,
+        "hint": "still running — poll task_result(task_id)",
+    }
+
+
+async def task_result(task_id: str) -> dict[str, Any]:
+    """Fetch a task's state and result (first completed stage, envelope-unwrapped).
+
+    Owner-directed tasks are only readable by the owner node — the CLI then
+    reports ``not found`` even though the task exists; that is surfaced as
+    ``status: "not_found"`` with a hint, not as a tool failure.
+    """
+    try:
+        payload = await run_node_cli(["task", "result", task_id], timeout=30.0)
+    except NodeCliError as exc:
+        if "not found" in str(exc):
+            return {
+                "task_id": task_id,
+                "status": "not_found",
+                "hint": (
+                    "owner-directed tasks are visible to the owner node only "
+                    "— query from the owning node's identity"
+                ),
+            }
+        raise
+    task = payload.get("task") or {}
+    stages = payload.get("stages") or []
+    return {
+        "task_id": task_id,
+        "status": task.get("status"),
+        "claimed_by": task.get("claimed_by"),
+        "owner_node_id": task.get("owner_node_id"),
+        "result": find_first_completed_stage_result(payload),
+        "stages_count": len(stages),
+        "stages": stages,
+    }
+
+
+async def artifact_download(artifact_id: str, output_path: str) -> dict[str, Any]:
+    """Download a task artifact to an explicit local path and verify it.
+
+    ``output_path`` must be absolute (or is resolved against the home
+    directory). The node-cli writes the bytes; this tool checks the file
+    after the fact so the caller does not trust the CLI message alone.
+    """
+    target = Path(output_path).expanduser()
+    if not target.is_absolute():
+        target = Path.home() / target
+    payload = await run_node_cli(
+        ["artifact", "download", artifact_id, "--output", str(target)],
+        timeout=300.0,
+    )
+    exists = target.is_file()
+    return {
+        "artifact_id": artifact_id,
+        "path": str(target),
+        "exists": exists,
+        "bytes": target.stat().st_size if exists else None,
+        "cli_output": payload,
+    }
+
+
+def register_write_tools(server: Any) -> None:
+    """Attach the v1 write toolset to a MCPServer instance."""
+    _t: Callable[..., Any] = server.tool
+    _t(
+        name="task_submit",
+        description=(
+            "Submit an IOWAP task: payload must match the capability's "
+            "input_schema (capabilities_list); owner_node_id must be a node "
+            "ID (not a name). wait_seconds<=90 polls briefly; long tasks: "
+            "poll task_result afterwards. Auto-merges into the task tracking "
+            "store so the desktop Tasks page shows it."
+        ),
+    )(task_submit)
+    _t(
+        name="task_result",
+        description=(
+            "Fetch task state + result (first completed stage, envelope "
+            "unwrapped). 'not_found' often means an owner-directed task: "
+            "readable by the owner node only."
+        ),
+    )(task_result)
+    _t(
+        name="artifact_download",
+        description=(
+            "Download a task artifact to an absolute local path; verifies "
+            "the file exists afterwards and reports its size."
+        ),
+    )(artifact_download)

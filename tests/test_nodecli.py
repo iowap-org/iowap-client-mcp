@@ -196,6 +196,21 @@ def test_text_mode_defaults_home_when_none(monkeypatch, tmp_path: Path) -> None:
     assert out == f"pwd:{tmp_path}"
 
 
+def test_empty_stdout_error_carries_stderr_detail(tmp_path: Path, monkeypatch) -> None:
+    """Live case: `task result <bogus>` exits 1 with stderr 'Task …: not found'.
+
+    The empty-stdout error must carry the stderr tail so consumers (e.g.
+    task_result's not-found mapping) can classify it.
+    """
+    exe = _script(
+        tmp_path / "bin" / "node-cli",
+        '#!/bin/sh\necho "Task task_X: not found" >&2\nexit 1\n',
+    )
+    monkeypatch.setattr(nodecli, "resolve_node_cli", lambda home=None: str(exe))
+    with pytest.raises(NodeCliError, match="not found"):
+        asyncio.run(run_node_cli(["task", "result", "task_X"], ok=(0,)))
+
+
 def test_spawn_failure_maps_to_nodecli_error(monkeypatch) -> None:
     """A non-spawnable resolved binary maps FileNotFoundError → NodeCliError.
 

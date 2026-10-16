@@ -16,23 +16,33 @@ from typing import Any
 __all__ = ["find_first_completed_stage_result"]
 
 
-def find_first_completed_stage_result(data: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the first completed stage's result from a task fetch.
+def find_first_completed_stage_result(data: dict[str, Any]) -> dict[str, Any] | Any:
+    """Return the first completed stage's result value.
 
-    Unwrap exactly one envelope layer; ``status: "error"`` or a set
-    ``error`` yields None (failed work). Legacy flat results pass through
-    unchanged. No completed stage → None.
+    Unwrap conformance: a result carrying the envelope triple
+    (``status`` + ``result`` keys) is unwrapped exactly one layer; envelope
+    ``status: "error"`` or a set ``error`` yields None. Legacy flat results
+    pass through unchanged.
+
+    Refinement over ``cli_bridge._find_result`` (live finding 2026-10-16,
+    ``mc.list.players``): a FLAT payload that merely carries the ``_handler``
+    debug dict is not an envelope — it used to collapse to ``{}``. It is
+    returned as the payload (debug key stripped). If ``_handler`` is present
+    together with a ``result`` key (no ``status``), the ``result`` value is
+    returned as the inner value.
     """
     for stage in data.get("stages", []):
         if stage.get("status") == "completed" and stage.get("result"):
             result = stage["result"]
-            is_envelope = isinstance(result, dict) and (
-                "_handler" in result or {"status", "result", "error"} <= set(result)
-            )
-            if is_envelope:
+            if not isinstance(result, dict):
+                return result
+            if {"status", "result"} <= set(result):
                 if result.get("status") == "error" or result.get("error"):
                     return None
-                inner = result.get("result")
-                return inner if isinstance(inner, dict) else {}
+                return result.get("result")
+            if "_handler" in result:
+                if "result" in result:
+                    return result["result"]
+                return {k: v for k, v in result.items() if k != "_handler"}
             return result
     return None

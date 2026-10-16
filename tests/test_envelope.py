@@ -21,7 +21,7 @@ def test_conformant_envelope_is_unwrapped() -> None:
     assert find_first_completed_stage_result(data) == {"answer": 42}
 
 
-def test_handler_key_triggers_envelope_unwrap() -> None:
+def test_handler_key_with_result_value_yields_inner() -> None:
     data = {
         "stages": [
             {
@@ -31,6 +31,32 @@ def test_handler_key_triggers_envelope_unwrap() -> None:
         ]
     }
     assert find_first_completed_stage_result(data) == {"a": 1}
+
+
+def test_flat_payload_with_handler_debug_is_not_an_envelope() -> None:
+    """Live finding (T-004, mc.list.players 2026-10-16): flat payload +
+    `_handler` debug dict used to collapse to {} — payload must survive."""
+    data = {
+        "stages": [
+            {
+                "status": "completed",
+                "result": {
+                    "ok": True,
+                    "servers": {"lobby": {"online": 0, "max": 20, "players": []}},
+                    "_handler": {"stderr": "", "stdout_length": 182, "exit_code": 0},
+                },
+            }
+        ]
+    }
+    result = find_first_completed_stage_result(data)
+    assert result["ok"] is True
+    assert result["servers"]["lobby"]["max"] == 20
+    assert "_handler" not in result
+
+
+def test_non_dict_result_passes_through() -> None:
+    data = {"stages": [{"status": "completed", "result": ["a", "b"]}]}
+    assert find_first_completed_stage_result(data) == ["a", "b"]
 
 
 def test_error_envelope_yields_none() -> None:
@@ -67,6 +93,10 @@ def test_legacy_flat_result_passes_through() -> None:
 
 
 def test_inner_non_dict_becomes_empty_dict() -> None:
+    """Legacy-conformant envelope with non-dict inner: value passes through.
+
+    (Refinement 2026-10-16: the cli_bridge collapse-to-{} loses data for a
+    tool consumer; non-dict inner values are returned as they are.)"""
     data = {
         "stages": [
             {
@@ -75,7 +105,7 @@ def test_inner_non_dict_becomes_empty_dict() -> None:
             }
         ]
     }
-    assert find_first_completed_stage_result(data) == {}
+    assert find_first_completed_stage_result(data) == ["flat", "list"]
 
 
 def test_no_completed_stage_yields_none() -> None:

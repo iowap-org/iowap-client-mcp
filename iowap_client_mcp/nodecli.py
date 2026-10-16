@@ -107,7 +107,7 @@ async def run_node_cli_text(
     """Run ``node-cli [--json] <args>`` raw — for commands whose output is
     human content (e.g. ``docs <page>`` returns markdown, not JSON)."""
     home_dir = Path.home() if home is None else Path(home)
-    stdout, _rc = await _run(args, timeout=timeout, ok=ok, home=home_dir)
+    stdout, _rc, _stderr = await _run(args, timeout=timeout, ok=ok, home=home_dir)
     return stdout
 
 
@@ -125,16 +125,21 @@ async def run_node_cli(
         NodeCliTimeoutError: the CLI did not finish within ``timeout``.
     """
     home_dir = Path.home() if home is None else Path(home)
-    stdout, rc = await _run(["--json", *args], timeout=timeout, ok=ok, home=home_dir)
+    stdout, rc, stderr = await _run(
+        ["--json", *args], timeout=timeout, ok=ok, home=home_dir
+    )
+    stderr_tail = stderr.strip()[:300]
     if not stdout.strip():
         raise NodeCliError(
-            f"node-cli produced no JSON output (exit {rc}): {' '.join(args)}"
+            f"node-cli produced no JSON output (exit {rc}): "
+            f"{stderr_tail or ' '.join(args)}"
         )
     try:
         return _parse(stdout)
     except ValueError as exc:
         raise NodeCliError(
-            f"node-cli produced non-JSON output (exit {rc}): {stdout.strip()[:300]}"
+            f"node-cli produced non-JSON output (exit {rc}): "
+            f"{stderr_tail or stdout.strip()[:300]}"
         ) from exc
 
 
@@ -143,8 +148,8 @@ async def _run(
     timeout: float,
     ok: tuple[int, ...],
     home: Path,
-) -> tuple[str, int]:
-    """Spawn node-cli with ``args`` as-is; return (stdout, rc) or raise."""
+) -> tuple[str, int, str]:
+    """Spawn node-cli with ``args`` as-is; return (stdout, rc, stderr) or raise."""
     home = Path.home() if home is None else Path(home)  # never str(None) as cwd
     cmd = [resolve_node_cli(home), *args]
     try:
@@ -176,7 +181,7 @@ async def _run(
         raise NodeCliError(
             f"node-cli exit {proc.returncode} ({' '.join(args)}): {detail[:300]}"
         )
-    return stdout, proc.returncode
+    return stdout, proc.returncode, stderr
 
 
 def _parse(raw: str) -> Any:

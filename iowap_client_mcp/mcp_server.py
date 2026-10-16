@@ -39,6 +39,7 @@ def build_server() -> Any | None:
     from iowap_client_mcp import tools
 
     tools.register_read_tools(server)
+    tools.register_write_tools(server)
     return server
 
 
