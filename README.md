@@ -58,6 +58,10 @@ mcp_servers:
 
 Or: `hermes mcp add iowap --command iowap-mcp`
 
+Any other MCP client uses the equivalent stdio spawn (command = `iowap-mcp`).
+Tested with Hermes Agent (`hermes mcp add` + `/reload-mcp`, live against a
+running relay) and Codex (OpenAI) — same stdio command, zero per-client code.
+
 ## Development
 
 ```bash
