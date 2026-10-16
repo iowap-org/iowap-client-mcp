@@ -16,6 +16,7 @@ from iowap_client_mcp.nodecli import (
     find_node_cli,
     resolve_node_cli,
     run_node_cli,
+    run_node_cli_text,
 )
 
 
@@ -180,6 +181,19 @@ def test_runner_cwd_is_home_not_repo(tmp_path: Path, monkeypatch) -> None:
     # test cwd (the repo) — the nodes/-shadow rule generalized.
     assert payload["cwd"] == str(home)
     assert payload["cwd"] != os.getcwd()
+
+
+def test_text_mode_defaults_home_when_none(monkeypatch, tmp_path: Path) -> None:
+    """ Regression: text mode with home=None must resolve HOME, not str(None).
+
+    str(None) as cwd produced "No such file or directory: 'None'" — found
+    live via the MCP stdio probe on the docs tool (T-003).
+    """
+    exe = _script(tmp_path / "bin" / "node-cli", '#!/bin/sh\nprintf "pwd:%s" "$(pwd)"\n')
+    monkeypatch.setattr(nodecli, "resolve_node_cli", lambda home=None: str(exe))
+    monkeypatch.setattr(nodecli.Path, "home", staticmethod(lambda: tmp_path))
+    out = asyncio.run(run_node_cli_text(["docs", "concepts"]))
+    assert out == f"pwd:{tmp_path}"
 
 
 def test_spawn_failure_maps_to_nodecli_error(monkeypatch) -> None:

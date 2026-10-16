@@ -34,6 +34,7 @@ __all__ = [
     "find_node_cli",
     "resolve_node_cli",
     "run_node_cli",
+    "run_node_cli_text",
 ]
 
 _PIN_RE = re.compile(r"^node_cli_path:(.*)$", re.MULTILINE)
@@ -97,6 +98,19 @@ def resolve_node_cli(home: Path | None = None) -> str:
     return "node-cli"  # let the spawn fail with a clear FileNotFoundError
 
 
+async def run_node_cli_text(
+    args: list[str],
+    timeout: float = 90.0,
+    ok: tuple[int, ...] = (0, 1),
+    home: Path | None = None,
+) -> str:
+    """Run ``node-cli [--json] <args>`` raw — for commands whose output is
+    human content (e.g. ``docs <page>`` returns markdown, not JSON)."""
+    home_dir = Path.home() if home is None else Path(home)
+    stdout, _rc = await _run(args, timeout=timeout, ok=ok, home=home_dir)
+    return stdout
+
+
 async def run_node_cli(
     args: list[str],
     timeout: float = 90.0,
@@ -111,11 +125,32 @@ async def run_node_cli(
         NodeCliTimeoutError: the CLI did not finish within ``timeout``.
     """
     home_dir = Path.home() if home is None else Path(home)
-    cmd = [resolve_node_cli(home_dir), "--json", *args]
+    stdout, rc = await _run(["--json", *args], timeout=timeout, ok=ok, home=home_dir)
+    if not stdout.strip():
+        raise NodeCliError(
+            f"node-cli produced no JSON output (exit {rc}): {' '.join(args)}"
+        )
+    try:
+        return _parse(stdout)
+    except ValueError as exc:
+        raise NodeCliError(
+            f"node-cli produced non-JSON output (exit {rc}): {stdout.strip()[:300]}"
+        ) from exc
+
+
+async def _run(
+    args: list[str],
+    timeout: float,
+    ok: tuple[int, ...],
+    home: Path,
+) -> tuple[str, int]:
+    """Spawn node-cli with ``args`` as-is; return (stdout, rc) or raise."""
+    home = Path.home() if home is None else Path(home)  # never str(None) as cwd
+    cmd = [resolve_node_cli(home), *args]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=str(home_dir),  # never an iowap checkout (nodes/ shadow pitfall)
+            cwd=str(home),  # never an iowap checkout (nodes/ shadow pitfall)
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -141,17 +176,7 @@ async def run_node_cli(
         raise NodeCliError(
             f"node-cli exit {proc.returncode} ({' '.join(args)}): {detail[:300]}"
         )
-    if not stdout.strip():
-        raise NodeCliError(
-            f"node-cli produced no JSON output (exit {proc.returncode}): {detail[:300]}"
-        )
-    try:
-        return _parse(stdout)
-    except ValueError as exc:
-        raise NodeCliError(
-            f"node-cli produced non-JSON output (exit {proc.returncode}): "
-            f"{stderr.strip()[:300] or stdout.strip()[:300]}"
-        ) from exc
+    return stdout, proc.returncode
 
 
 def _parse(raw: str) -> Any:

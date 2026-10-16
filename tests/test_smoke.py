@@ -45,9 +45,13 @@ def test_build_server_with_sdk() -> None:
     assert server.name == "iowap"
 
 
-def test_skeleton_registers_zero_tools() -> None:
-    """T-001 contract: the skeleton ships zero tools — v1 set lands in T-002+."""
-    assert asyncio.run(list_tool_names()) == []
+def test_v1_read_toolset_is_registered_and_whitelisted() -> None:
+    """Read set (T-003) is registered; nothing beyond the curated list."""
+    from iowap_client_mcp.tools import READ_TOOLS
+
+    names = asyncio.run(list_tool_names())
+    assert set(names) == set(READ_TOOLS)
+    assert len(names) == len(set(names)) == 4
 
 
 def test_build_server_without_sdk(monkeypatch) -> None:

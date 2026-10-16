@@ -36,7 +36,9 @@ def build_server() -> Any | None:
             "download, and live relay docs."
         ),
     )
-    # Curated v1 toolset lands in T-002..T-004 — registered via server.tool().
+    from iowap_client_mcp import tools
+
+    tools.register_read_tools(server)
     return server
 
 
