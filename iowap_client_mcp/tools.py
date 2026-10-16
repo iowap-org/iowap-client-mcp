@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from iowap_client_mcp import tracking
 from iowap_client_mcp.envelope import find_first_completed_stage_result
 from iowap_client_mcp.nodecli import NodeCliError, run_node_cli, run_node_cli_text
 
@@ -162,40 +161,29 @@ def register_read_tools(server: Any) -> None:
     )(docs)
 
 
-def _find_iowap_task() -> str | None:
-    """Locate the iowap-task session-bridge (reuse, not reimplementation)."""
-    found = shutil.which("iowap-task")
-    if found:
-        return found
-    candidate = Path.home() / ".local/bin/iowap-task"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-    return None
+async def _track_task(
+    task_id: str | None,
+    *,
+    capability: str | None,
+    name: str | None,
+    owner: str | None,
+    delegated: bool,
+) -> dict[str, Any]:
+    """Best-effort merge into the shared track store (T-007: in-process).
 
-
-async def _track_task(task_id: str, delegated: bool) -> dict[str, Any]:
-    """Best-effort merge into the shared track store via the iowap-task bridge.
-
-    The bridge owns the flock-protected store (same file as the desktop
-    plugin backend) — this toolkit never writes the schema itself.
+    Same flock/store semantics as the session bridge and the desktop
+    plugin backend — no external binary required. Tracking must never
+    break a submit; a missing store dir degrades to ``tracked: false``.
     """
-    bridge = _find_iowap_task()
-    if not bridge:
-        return {"tracked": False, "reason": "iowap-task bridge not installed"}
-    args = [bridge, "track", task_id]
-    if delegated:
-        args.append("--delegated")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=str(Path.home()),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=20)
-        return {"tracked": proc.returncode == 0}
-    except (OSError, TimeoutError) as exc:  # tracking must never break a submit
-        return {"tracked": False, "reason": f"bridge call failed: {exc}"}
+    if not task_id:
+        return {"tracked": False, "reason": "submit returned no task_id"}
+    return tracking.merge(  # type: ignore[return-value]
+        task_id,
+        capability=capability or "unknown",
+        name=name,
+        owner=owner,
+        delegated=delegated,
+    )
 
 
 def _stage_arg(capability: str, payload: dict[str, Any]) -> str:
@@ -212,6 +200,7 @@ async def task_submit(
     payload: dict[str, Any],
     owner_node_id: str | None = None,
     wait_seconds: int = 0,
+    name: str | None = None,
 ) -> dict[str, Any]:
     """Submit a task against a capability; optionally wait for completion.
 
@@ -219,10 +208,13 @@ async def task_submit(
     ``capabilities_list``). ``owner_node_id`` directs the task to one node —
     it must be a node ID from ``node_list``/``capabilities_list`` (a node
     NAME would crash the relay with a 500). Owner-directed tasks are
-    readable only by the owner node; results are claimed by that node.
+    tracked as ``delegated``; since T-227 the relay lets the admin, the
+    owner node, and the sender (submitted_by) read the task — this node
+    can fetch its own owner-directed results.
 
     ``wait_seconds`` (capped at 90) polls for a short while; long-running
-    tasks should be polled via ``task_result`` instead.
+    tasks should be polled via ``task_result`` instead. ``name`` labels
+    the row on the desktop Tasks page (optional).
     """
     if not isinstance(payload, dict):
         raise TypeError("payload must be a JSON object (dict)")
@@ -234,6 +226,8 @@ async def task_submit(
     wait = max(0, min(int(wait_seconds), _WAIT_CAP))
 
     args = ["task", "submit", "--stage", _stage_arg(capability, payload)]
+    if name:
+        args += ["--name", name[:120]]
     if owner_node_id:
         args += ["--owner", owner_node_id]
     submit_payload = await run_node_cli(args, timeout=30.0)
@@ -243,8 +237,15 @@ async def task_submit(
         "task_id": task_id,
         "status": submit_payload.get("status"),
         "owner_node_id": owner_node_id,
+        "name": name,
     }
-    result["tracking"] = await _track_task(task_id, delegated=bool(owner_node_id))
+    result["tracking"] = await _track_task(
+        task_id,
+        capability=capability,
+        name=name,
+        owner=owner_node_id,
+        delegated=bool(owner_node_id),
+    )
 
     if not wait or not task_id:
         return result
@@ -272,9 +273,11 @@ async def task_submit(
 async def task_result(task_id: str) -> dict[str, Any]:
     """Fetch a task's state and result (first completed stage, envelope-unwrapped).
 
-    Owner-directed tasks are only readable by the owner node — the CLI then
-    reports ``not found`` even though the task exists; that is surfaced as
-    ``status: "not_found"`` with a hint, not as a tool failure.
+    Read scope since T-227: admin, the owner node, or the sender
+    (``submitted_by``) — this node sees its own owner-directed results.
+    If the CLI still reports ``not found`` (different identity, pruned
+    task), that is surfaced as ``status: "not_found"`` with a hint, not
+    as a tool failure.
     """
     try:
         payload = await run_node_cli(["task", "result", task_id], timeout=30.0)
@@ -284,8 +287,9 @@ async def task_result(task_id: str) -> dict[str, Any]:
                 "task_id": task_id,
                 "status": "not_found",
                 "hint": (
-                    "owner-directed tasks are visible to the owner node only "
-                    "— query from the owning node's identity"
+                    "task not readable from this node's identity — since T-227 "
+                    "admin, the owner node, and the sender (submitted_by) "
+                    "can read it; submit from the owning/sending node's token"
                 ),
             }
         raise
@@ -334,17 +338,18 @@ def register_write_tools(server: Any) -> None:
         description=(
             "Submit an IOWAP task: payload must match the capability's "
             "input_schema (capabilities_list); owner_node_id must be a node "
-            "ID (not a name). wait_seconds<=90 polls briefly; long tasks: "
-            "poll task_result afterwards. Auto-merges into the task tracking "
-            "store so the desktop Tasks page shows it."
+            "ID (not a name); name labels the row on the desktop Tasks page. "
+            "wait_seconds<=90 polls briefly; long tasks: poll task_result "
+            "afterwards. Auto-merges into the task tracking store (in-process)."
         ),
     )(task_submit)
     _t(
         name="task_result",
         description=(
             "Fetch task state + result (first completed stage, envelope "
-            "unwrapped). 'not_found' often means an owner-directed task: "
-            "readable by the owner node only."
+            "unwrapped). Read scope: admin, owner node, or the sender "
+            "(submitted_by, T-227) — this node can fetch its own "
+            "owner-directed results."
         ),
     )(task_result)
     _t(

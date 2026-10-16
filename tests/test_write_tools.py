@@ -11,7 +11,6 @@ import pytest
 from iowap_client_mcp import tools
 from iowap_client_mcp.nodecli import NodeCliError
 from iowap_client_mcp.tools import (
-    _find_iowap_task,
     _stage_arg,
     artifact_download,
     task_result,
@@ -85,17 +84,19 @@ def test_submit_without_wait_returns_task_and_tracks(monkeypatch) -> None:
         return submit_payload
 
     monkeypatch.setattr(tools, "run_node_cli", _fake)
-    seen: list[list[str]] = []
+    seen: list[list] = []
 
-    async def _track(task_id, delegated):
-        seen.append([task_id, delegated])
+    async def _track(task_id: str, **meta) -> dict:
+        seen.append([task_id, meta])
         return {"tracked": True}
 
     monkeypatch.setattr(tools, "_track_task", _track)
     result = asyncio.run(task_submit("chat.ai", {"prompt": "hi"}))
     assert result["task_id"] == "task_XYZ"
     assert result["tracking"] == {"tracked": True}
-    assert seen == [["task_XYZ", False]]
+    assert seen == [
+        ["task_XYZ", {"capability": "chat.ai", "name": None, "owner": None, "delegated": False}]
+    ]
 
 
 def test_submit_owner_directed_tracks_delegated(monkeypatch) -> None:
@@ -104,8 +105,8 @@ def test_submit_owner_directed_tracks_delegated(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "run_node_cli", _fake)
 
-    async def _track(task_id, delegated):
-        return {"tracked": delegated}
+    async def _track(task_id: str, **meta) -> dict:
+        return {"tracked": bool(meta.get("delegated"))}
 
     monkeypatch.setattr(tools, "_track_task", _track)
     result = asyncio.run(
@@ -132,7 +133,7 @@ def test_submit_wait_completes_quickly(monkeypatch) -> None:
     monkeypatch.setattr(tools, "run_node_cli", _fake)
     monkeypatch.setattr(tools, "_POLL_INTERVAL", 0.01)
 
-    async def _track(task_id, delegated):
+    async def _track(task_id: str, **meta) -> dict:
         return {"tracked": False}
 
     monkeypatch.setattr(tools, "_track_task", _track)
@@ -153,7 +154,7 @@ def test_submit_wait_capped_at_ninety(monkeypatch) -> None:
     monkeypatch.setattr(tools, "_POLL_INTERVAL", 0.05)
     monkeypatch.setattr(tools, "_WAIT_CAP", 0.12)  # cap itself under test
 
-    async def _track(task_id, delegated):
+    async def _track(task_id: str, **meta) -> dict:
         return {"tracked": False}
 
     monkeypatch.setattr(tools, "_track_task", _track)
@@ -260,20 +261,12 @@ def test_artifact_download_relative_resolves_home(monkeypatch, tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_bridge_missing_reports_reason(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(tools.shutil, "which", lambda *_: None)
-    monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
-    result = asyncio.run(tools._track_task("task_1", delegated=False))
-    assert result == {"tracked": False, "reason": "iowap-task bridge not installed"}
-
-
-def test_bridge_track_exit_code_is_honored(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
-    bridge = _fake_exe(tmp_path / ".local" / "bin" / "iowap-task", "#!/bin/sh\nexit 0\n")
-    monkeypatch.setattr(tools.shutil, "which", lambda *_: None)
-    result = asyncio.run(tools._track_task("task_2", delegated=False))
-    assert result == {"tracked": True}
-    assert bridge.endswith("iowap-task")
+# ---------------------------------------------------------------------------
+# iowap-task bridge (track store reuse) — REMOVED by T-007: tracking is now
+# in-process (`iowap_client_mcp.tracking`); flock/concurrency/schema
+# contracts live in tests/test_t007_tracking.py. The bridge binary itself
+# stays a session-side CLI in the iowap-hermes-integration repo.
+# ---------------------------------------------------------------------------
 
 
 def test_submit_accepts_digits_in_node_ids(monkeypatch) -> None:
@@ -283,7 +276,7 @@ def test_submit_accepts_digits_in_node_ids(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "run_node_cli", _fake)
 
-    async def _track(task_id, delegated):
+    async def _track(task_id: str, **meta) -> dict:
         return {"tracked": False}
 
     monkeypatch.setattr(tools, "_track_task", _track)
@@ -291,19 +284,3 @@ def test_submit_accepts_digits_in_node_ids(monkeypatch) -> None:
         task_submit("mc.list.players", {}, owner_node_id="AMKJA9AE")
     )
     assert result["task_id"] == "task_D9"
-
-
-def test_bridge_track_failure_is_swallowed(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
-    _fake_exe(tmp_path / ".local" / "bin" / "iowap-task", "#!/bin/sh\nexit 3\n")
-    monkeypatch.setattr(tools.shutil, "which", lambda *_: None)
-    result = asyncio.run(tools._track_task("task_3", delegated=True))
-    assert result == {"tracked": False}
-
-
-def test_bridge_discovery_via_home_layout(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: tmp_path))
-    monkeypatch.setattr(tools.shutil, "which", lambda *_: None)
-    assert _find_iowap_task() is None
-    bridge = _fake_exe(tmp_path / ".local" / "bin" / "iowap-task")
-    assert _find_iowap_task() == bridge
