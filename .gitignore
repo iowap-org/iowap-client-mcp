@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Hermes working artifacts (plans, agent output) stay local
+.hermes/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Environments
+*.env
+.env
+
+# Testing / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a problem with the IOWAP MCP toolkit
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Expected vs. actual behavior. Omit real node IDs, tokens, or internal URLs.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `iowap-mcp --version`
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps, with a generic node/relay setup.
+    validations:
+      required: true
