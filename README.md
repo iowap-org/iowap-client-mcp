@@ -33,8 +33,9 @@ the server adds zero credential handling of its own. Destructive commands
 (register, update, daemon control, capability publishing) are deliberately not
 exposed.
 
-Future: a Streamable HTTP variant for remote agents, running under a dedicated
-service node identity.
+Scope is one host: the server binds the local node to local MCP clients.
+There is deliberately no remote/HTTP variant — the node identity stays on the
+machine that owns it.
 
 ## Install
 
