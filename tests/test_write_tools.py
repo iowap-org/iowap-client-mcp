@@ -43,6 +43,75 @@ def test_submit_rejects_node_name_as_owner(monkeypatch) -> None:
         )
 
 
+def test_submit_allowlist_denies(monkeypatch) -> None:
+    """Operator allowlist (IOWAP_ALLOW_CAPS) gates the execution surface."""
+    monkeypatch.setenv("IOWAP_ALLOW_CAPS", "chat.ai, mc.list.players")
+    monkeypatch.setattr(
+        tools, "run_node_cli", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
+    )
+    with pytest.raises(ValueError, match="IOWAP_ALLOW_CAPS"):
+        asyncio.run(task_submit("desktop.ctl", {}))
+
+
+def test_submit_allowlist_allows_listed_and_unset(monkeypatch) -> None:
+    async def _fake(args, **kwargs):
+        return {"task_id": "task_OK", "status": "pending"}
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+
+    async def _track(task_id, **kwargs):
+        return {"tracked": False}
+
+    monkeypatch.setattr(tools, "_track_task", _track)
+    monkeypatch.setenv("IOWAP_ALLOW_CAPS", "chat.ai")
+    r1 = asyncio.run(task_submit("chat.ai", {}))
+    monkeypatch.delenv("IOWAP_ALLOW_CAPS", raising=False)
+    r2 = asyncio.run(task_submit("desktop.ctl", {}))  # unset = open
+    monkeypatch.setenv("IOWAP_ALLOW_CAPS", "   ")
+    r3 = asyncio.run(task_submit("desktop.ctl", {}))  # whitespace-only = open
+    assert (r1["task_id"], r2["task_id"], r3["task_id"]) == ("task_OK", "task_OK", "task_OK")
+
+
+def test_artifact_download_refuses_overwrite(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "keep.png"
+    target.write_bytes(b"original")
+
+    monkeypatch.setattr(
+        tools, "run_node_cli",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download allowed"))
+    )
+    with pytest.raises(FileExistsError, match="overwrite"):
+        asyncio.run(artifact_download("art_x", str(target)))
+    assert target.read_bytes() == b"original"  # untouched
+
+
+def test_artifact_download_overwrite_true_proceeds(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "keep.png"
+    target.write_bytes(b"original")
+
+    async def _fake(args, **kwargs):
+        target.write_bytes(b"REPLACED")
+        return {"artifact_id": "art_x", "ok": True}
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(artifact_download("art_x", str(target), overwrite=True))
+    assert result["exists"] is True
+    assert target.read_bytes() == b"REPLACED"
+
+
+def test_tracking_degrades_without_fcntl(monkeypatch, tmp_path: Path) -> None:
+    """POSIX-only locking degrades to tracked:false — server start survives."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setitem(__import__("sys").modules, "fcntl", None)
+    result = asyncio.run(tools._track_task("task_LZ", capability="c", name=None, owner=None, delegated=False))
+    # ModuleNotFoundError (subclass of ImportError) is what the halted halt yields
+    assert result == {
+        "tracked": False,
+        "reason": "ModuleNotFoundError: import of fcntl halted; None in sys.modules",
+    }
+
+
 def test_submit_rejects_non_payload(monkeypatch) -> None:
     monkeypatch.setattr(
         tools, "run_node_cli", lambda *a, **k: (_ for _ in ()).throw(AssertionError())

@@ -13,11 +13,14 @@ delegated-stale rows after 24h on it).
 Do not diverge from those writers — the backend reader is
 schema-sensitive. Tracking is best-effort by contract: a merge failure
 returns ``{"tracked": false, "reason": …}`` and never breaks a submit.
+
+POSIX-only feature: locking uses ``fcntl`` (Linux/macOS). On platforms
+without it the module still imports (lazy import inside ``merge``) and
+tracking degrades to ``{"tracked": false}`` — submits are unaffected.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import time
@@ -59,6 +62,8 @@ def merge(
         "submitted_at": time.time(),
     }
     try:
+        import fcntl  # lazy: POSIX-only (degrades to tracked:false without it)
+
         ff = track_file()
         ff.parent.mkdir(parents=True, exist_ok=True)
         with ff.open("a+", encoding="utf-8") as fh:

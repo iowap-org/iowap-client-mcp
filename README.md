@@ -33,9 +33,21 @@ the server adds zero credential handling of its own. Destructive commands
 (register, update, daemon control, capability publishing) are deliberately not
 exposed.
 
+**Trust model:** whoever can launch `iowap-mcp` on the host acts with the
+host's node identity — an MCP client spawning this server is a trusted
+executor. Environment filtering of the stdio subprocess is host behavior;
+the package relies on the node's on-disk identity and enforces none of it
+itself.
+
+**Narrowable execution:** operators can restrict which capabilities
+`task_submit` may fire with `IOWAP_ALLOW_CAPS=cap.one,cap.two` (csv env,
+unset means all) — with `hermes mcp add` that is an `--env` line away.
+`artifact_download` writes a file: an existing path is refused unless
+`overwrite: true` states the replacement explicitly.
+
 Scope is one host: the server binds the local node to local MCP clients.
 There is deliberately no remote/HTTP variant — the node identity stays on the
-machine that owns it.
+machine that owns it. POSIX host (Linux/macOS) — no Windows support.
 
 ## Install
 

@@ -1,10 +1,18 @@
 [project]
 name = "iowap-client-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP stdio toolkit for IOWAP — curated agent tools over the IOWAP node CLI"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
 dependencies = []
 
 [project.optional-dependencies]

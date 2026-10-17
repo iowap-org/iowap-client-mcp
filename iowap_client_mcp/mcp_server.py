@@ -1,12 +1,16 @@
 """IOWAP MCP stdio server.
 
 Runs as an MCP stdio subprocess spawned by the MCP client (Hermes, OpenCode,
-any MCP-speaking agent). The node CLI (`node-cli --json`) remains the source of
-truth for relay auth and request execution — this server never touches tokens
-or speaks HTTP to the relay itself.
+Codex, any MCP-speaking agent). The node CLI (`node-cli --json`) remains the
+source of truth for relay auth and request execution — this server never
+touches tokens or speaks HTTP to the relay itself.
 
-Skeleton (T-001): the server starts and exposes zero tools. The curated v1
-toolset is added in T-002/T-003/T-004 (see the project board).
+v1 (T-003/T-004) registers the curated 7-tool set (see tools.py):
+read — relay_status, node_list, capabilities_list, docs
+write — task_submit, task_result, artifact_download
+Scope: binds the local node to local MCP clients (no remote/HTTP variant);
+destructive node operations are deliberately not exposed. See the project
+board (DECISIONS.md) for every boundary decision.
 """
 
 from __future__ import annotations

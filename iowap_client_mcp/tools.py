@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from collections.abc import Callable
@@ -195,6 +196,17 @@ def _stage_arg(capability: str, payload: dict[str, Any]) -> str:
     return f"{capability}:{json.dumps(payload, separators=(',', ':'))}"
 
 
+def _allowed_capabilities() -> set[str] | None:
+    """Operator allowlist from ``IOWAP_ALLOW_CAPS`` (csv), or None = open.
+
+    Read per call so MCP-host configuration (``--env IOWAP_ALLOW_CAPS=…``)
+    applies live; unset/empty means no restriction (local-first trust model).
+    """
+    raw = os.environ.get("IOWAP_ALLOW_CAPS", "")
+    allowed = {entry.strip() for entry in raw.split(",") if entry.strip()}
+    return allowed or None
+
+
 async def task_submit(
     capability: str,
     payload: dict[str, Any],
@@ -222,6 +234,12 @@ async def task_submit(
         raise ValueError(
             f"owner_node_id {owner_node_id!r} is not a node ID — use node_list "
             "(IDs are uppercase alphanumeric tokens like NODE23A4; a node NAME breaks the relay)"
+        )
+    allowed = _allowed_capabilities()
+    if allowed and capability not in allowed:
+        raise ValueError(
+            f"capability {capability!r} not in IOWAP_ALLOW_CAPS allowlist — "
+            f"operator-set allowed capabilities: {sorted(allowed)}"
         )
     wait = max(0, min(int(wait_seconds), _WAIT_CAP))
 
@@ -306,16 +324,26 @@ async def task_result(task_id: str) -> dict[str, Any]:
     }
 
 
-async def artifact_download(artifact_id: str, output_path: str) -> dict[str, Any]:
+async def artifact_download(
+    artifact_id: str,
+    output_path: str,
+    overwrite: bool = False,
+) -> dict[str, Any]:
     """Download a task artifact to an explicit local path and verify it.
 
     ``output_path`` must be absolute (or is resolved against the home
-    directory). The node-cli writes the bytes; this tool checks the file
-    after the fact so the caller does not trust the CLI message alone.
+    directory). This is a FILE WRITE: an existing file is refused unless
+    ``overwrite: true`` is passed (the caller states the destruction
+    explicitly). The node-cli writes the bytes; this tool checks the file
+    afterwards so the caller does not trust the CLI message alone.
     """
     target = Path(output_path).expanduser()
     if not target.is_absolute():
         target = Path.home() / target
+    if target.is_file() and not overwrite:
+        raise FileExistsError(
+            f"{target} exists — pass overwrite=true to replace the file explicitly"
+        )
     payload = await run_node_cli(
         ["artifact", "download", artifact_id, "--output", str(target)],
         timeout=300.0,
@@ -340,7 +368,9 @@ def register_write_tools(server: Any) -> None:
             "input_schema (capabilities_list); owner_node_id must be a node "
             "ID (not a name); name labels the row on the desktop Tasks page. "
             "wait_seconds<=90 polls briefly; long tasks: poll task_result "
-            "afterwards. Auto-merges into the task tracking store (in-process)."
+            "afterwards. Auto-merges into the task tracking store "
+            "(in-process). Operators can restrict submitable capabilities "
+            "via IOWAP_ALLOW_CAPS (csv env; unset = all)."
         ),
     )(task_submit)
     _t(
@@ -355,7 +385,8 @@ def register_write_tools(server: Any) -> None:
     _t(
         name="artifact_download",
         description=(
-            "Download a task artifact to an absolute local path; verifies "
-            "the file exists afterwards and reports its size."
+            "Download a task artifact to an absolute local path; refuses to "
+            "overwrite an existing file unless overwrite=true. Verifies the "
+            "file exists afterwards and reports its size."
         ),
     )(artifact_download)
