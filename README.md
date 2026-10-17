@@ -55,9 +55,13 @@ machine that owns it. POSIX host (Linux/macOS) — no Windows support.
 pip install "iowap-client-mcp[mcp]"
 ```
 
-Requires a node installation of IOWAP on the same host (see
-[iowap-node](https://github.com/iowap-org/iowap-node)) — the server shells out
-to the installed `node-cli`.
+…or let the local node install it: `node-cli mcp install` (own venv,
+client-neutral, PyPI registry). Requires a node installation of IOWAP on
+the same host (see [iowap-node](https://github.com/iowap-org/iowap-node)) —
+the server shells out to the installed `node-cli`. Both wheels are regular
+PyPI packages: `node-cli update check/apply` keeps node and toolkit current
+together (toolkit upgrades need no service restart — the server process
+reloads on the next client spawn).
 
 ## Wire it into an MCP client
 
