@@ -20,6 +20,17 @@ def hermes_home(monkeypatch, tmp_path):
     return tmp_path
 
 
+def test_merge_writes_session_origin_meta():
+    # T-016: session_id rides in the meta — the desktop watcher uses it as
+    # composer target (posts back into the submitting session)
+    assert tracking.merge("s1", capability="code.ai", delegated=False, session_id="20261025_165600_6cb063") == {"tracked": True}
+    meta = _read_store()["meta"]["s1"]
+    assert meta["session_id"] == "20261025_165600_6cb063"
+    # omit → explicit None (schema parity with bridge/backend writers)
+    assert tracking.merge("s2", capability="code.ai", delegated=False) == {"tracked": True}
+    assert _read_store()["meta"]["s2"]["session_id"] is None
+
+
 def _read_store() -> dict:
     ff = Path(os.environ["HERMES_HOME"]) / "plugin-data" / "iowap" / "task-track-iowap.json"
     with ff.open() as fh:
@@ -34,13 +45,16 @@ def test_merge_write_schema_matches_bridge():
     )
     assert ret["tracked"] is True
     row = _read_store()["meta"]["task_a"]
-    assert set(row) == {"capability", "name", "owner", "delegated", "submitted_at"}
+    assert set(row) == {
+        "capability", "name", "owner", "delegated", "submitted_at", "session_id"
+    }
     assert row == {
         "capability": "agent.ai",
         "name": "job",
         "owner": "NODE23A4",
         "delegated": True,
         "submitted_at": row["submitted_at"],
+        "session_id": None,
     }
     assert isinstance(row["submitted_at"], float)
 
@@ -113,6 +127,7 @@ def test_task_submit_tracks_full_metadata(monkeypatch):
         "name": "demo",
         "owner": "NODE23A4",
         "delegated": True,
+        "session_id": None,
     }
     assert result["task_id"] == "task_z"
     assert result["tracking"] == {"tracked": True}

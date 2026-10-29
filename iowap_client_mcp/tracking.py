@@ -47,6 +47,7 @@ def merge(
     name: str | None = None,
     owner: str | None = None,
     delegated: bool,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Add/refresh one tracked id + metadata under an exclusive flock.
 
@@ -60,6 +61,9 @@ def merge(
         "owner": owner,
         "delegated": delegated,
         "submitted_at": time.time(),
+        # T-016: session origin (composer per-id addressing) — None when the
+        # caller did not pass a session id.
+        "session_id": session_id,
     }
     try:
         import fcntl  # lazy: POSIX-only (degrades to tracked:false without it)

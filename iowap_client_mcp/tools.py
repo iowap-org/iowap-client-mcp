@@ -169,6 +169,7 @@ async def _track_task(
     name: str | None,
     owner: str | None,
     delegated: bool,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Best-effort merge into the shared track store (T-007: in-process).
 
@@ -184,6 +185,7 @@ async def _track_task(
         name=name,
         owner=owner,
         delegated=delegated,
+        session_id=session_id,
     )
 
 
@@ -213,6 +215,7 @@ async def task_submit(
     owner_node_id: str | None = None,
     wait_seconds: int = 0,
     name: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit a task against a capability; optionally wait for completion.
 
@@ -223,6 +226,12 @@ async def task_submit(
     tracked as ``delegated``; since T-227 the relay lets the admin, the
     owner node, and the sender (submitted_by) read the task — this node
     can fetch its own owner-directed results.
+
+    ``session_id`` records the submitting agent session id in the track
+    store — the desktop plugin's task watcher uses it as the composer
+    target and posts stage/final updates back into exactly that session
+    (fail-closed; falls back to a notification when the session is not
+    mounted). Omit it to track without a session target.
 
     ``wait_seconds`` (capped at 90) polls for a short while; long-running
     tasks should be polled via ``task_result`` instead. ``name`` labels
@@ -263,6 +272,7 @@ async def task_submit(
         name=name,
         owner=owner_node_id,
         delegated=bool(owner_node_id),
+        session_id=(session_id or "").strip()[:64] or None,
     )
 
     if not wait or not task_id:

@@ -164,7 +164,16 @@ def test_submit_without_wait_returns_task_and_tracks(monkeypatch) -> None:
     assert result["task_id"] == "task_XYZ"
     assert result["tracking"] == {"tracked": True}
     assert seen == [
-        ["task_XYZ", {"capability": "chat.ai", "name": None, "owner": None, "delegated": False}]
+        [
+            "task_XYZ",
+            {
+                "capability": "chat.ai",
+                "name": None,
+                "owner": None,
+                "delegated": False,
+                "session_id": None,
+            },
+        ]
     ]
 
 
