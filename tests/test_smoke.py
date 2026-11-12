@@ -46,12 +46,12 @@ def test_build_server_with_sdk() -> None:
 
 
 def test_v1_read_toolset_is_registered_and_whitelisted() -> None:
-    """Full v1 set (read T-003 + write T-004) registered; nothing beyond."""
+    """Full v1 set (read T-003 + write T-004 + read T-235) registered; no extras."""
     from iowap_client_mcp.tools import ALL_TOOLS
 
     names = asyncio.run(list_tool_names())
     assert set(names) == set(ALL_TOOLS)
-    assert len(names) == len(set(names)) == 7
+    assert len(names) == len(set(names)) == 8
 
 
 def test_build_server_without_sdk(monkeypatch) -> None:

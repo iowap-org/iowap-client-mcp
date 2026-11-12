@@ -2,6 +2,8 @@
 
 v1 read set (T-003): relay_status, node_list, capabilities_list, docs.
 The write set (task_submit/task_result/artifact_download) lands in T-004.
+T-235 adds task_list to the read set — filtered task queries on the
+node-cli task-list filters of the T-268 server backend.
 Destructive surface is deliberately absent — see the project DECISIONS.md.
 """
 
@@ -13,12 +15,18 @@ import os
 import re
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from iowap_client_mcp import tracking
 from iowap_client_mcp.envelope import find_first_completed_stage_result
-from iowap_client_mcp.nodecli import NodeCliError, run_node_cli, run_node_cli_text
+from iowap_client_mcp.nodecli import (
+    NodeCliError,
+    parse_relay_error,
+    run_node_cli,
+    run_node_cli_text,
+)
 
 __all__ = [
     "ALL_TOOLS",
@@ -31,11 +39,12 @@ __all__ = [
     "register_read_tools",
     "register_write_tools",
     "relay_status",
+    "task_list",
     "task_result",
     "task_submit",
 ]
 
-READ_TOOLS = ("relay_status", "node_list", "capabilities_list", "docs")
+READ_TOOLS = ("relay_status", "node_list", "capabilities_list", "docs", "task_list")
 WRITE_TOOLS = ("task_submit", "task_result", "artifact_download")
 ALL_TOOLS = READ_TOOLS + WRITE_TOOLS
 
@@ -126,6 +135,109 @@ async def docs(page: str | None = None) -> dict[str, Any]:
     return {"page": page, "content": content.rstrip("\n")}
 
 
+def _created_sort_key(row: dict[str, Any]) -> tuple[int, str]:
+    """Newest-first key on ``created_at`` (ISO-8601); unparseable sinks last.
+
+    Bucket 1 = parseable timestamp, compared as a UTC-normalized ISO string
+    (lexicographic == chronological there); bucket 0 = missing/unparseable
+    — under ``reverse=True`` those rows sink to the end without raising.
+    """
+    raw = row.get("created_at")
+    value = raw if isinstance(raw, str) and raw.strip() else ""
+    if value:
+        parsed: datetime | None = None
+        try:
+            parsed = datetime.fromisoformat(value)  # py311+ parses 'Z' suffix
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return (1, parsed.astimezone(UTC).isoformat())
+    return (0, value)
+
+
+async def task_list(
+    submitted_by: str | None = None,
+    owner_node_id: str | None = None,
+    status: str | None = None,
+    created_since: str | None = None,
+    created_until: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Query tasks with optional filters (AND-combined relay-side).
+
+    Passthrough params: ``status`` is a comma-separated list (e.g.
+    ``"failed,cancelled"``) the relay validates (unknown → 422);
+    ``submitted_by`` is a node ID; ``created_since``/``created_until`` are
+    ISO-8601 timestamps. A non-admin node listing tasks submitted by a
+    FOREIGN node ID is rejected with HTTP 400 — both rejections surface as
+    clean tool errors (no runner noise).
+
+    ``owner_node_id`` must be a node ID from ``node_list`` — a node NAME
+    breaks the relay, so it is rejected before spawning (same guard as
+    ``task_submit``).
+
+    Returns compact rows ``{"task_id", "task_name", "status", "created_at",
+    "updated_at", "submitted_by", "owner_node_id"}`` — deliberately NO
+    stage payloads (fetch those per task via ``task_result``). Rows are
+    sorted newest-first and sliced to the first ``limit`` (default 50)
+    CLIENT-side: the relay has no LIMIT parameter (T-268).
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise TypeError(f"limit must be an integer, got {type(limit).__name__}")
+    if limit < 1:
+        raise ValueError("limit must be >= 1 — the client slices after sorting")
+    if owner_node_id and not _NODE_ID_RE.match(owner_node_id):
+        raise ValueError(
+            f"owner_node_id {owner_node_id!r} is not a node ID — use node_list "
+            "(IDs are uppercase alphanumeric tokens like NODE23A4; a node NAME breaks the relay)"
+        )
+    args = ["task", "list"]
+    if submitted_by:
+        args += ["--submitted-by", submitted_by]
+    if owner_node_id:
+        args += ["--owner", owner_node_id]
+    if status:
+        args += ["--status", status]
+    if created_since:
+        args += ["--since", created_since]
+    if created_until:
+        args += ["--until", created_until]
+    try:
+        payload = await run_node_cli(args, timeout=30.0)
+    except NodeCliError as exc:
+        parsed_error = parse_relay_error(str(exc))
+        if parsed_error is None:  # transport/setup failure — propagate verbatim
+            raise
+        code, message = parsed_error
+        if code == 400:
+            message += (
+                " — non-admin nodes may only list tasks they submitted "
+                "themselves (pass the host's own submitted_by, or ask an admin)"
+            )
+        raise NodeCliError(f"relay rejected task list (HTTP {code}): {message}") from exc
+    rows = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+    compact = [
+        {
+            "task_id": row.get("task_id"),
+            "task_name": row.get("task_name"),
+            "status": row.get("status"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "submitted_by": row.get("submitted_by"),
+            "owner_node_id": row.get("owner_node_id"),
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    compact.sort(key=_created_sort_key, reverse=True)
+    limited = compact[:limit]
+    return {"count": len(limited), "tasks": limited}
+
+
 def register_read_tools(server: Any) -> None:
     """Attach the v1 read toolset to a MCPServer instance."""
     _t: Callable[..., Any] = server.tool
@@ -160,6 +272,19 @@ def register_read_tools(server: Any) -> None:
             "page: available pages. With page: that page's markdown content."
         ),
     )(docs)
+    _t(
+        name="task_list",
+        description=(
+            "Query tasks with AND-combined filters (all optional): "
+            "submitted_by, owner_node_id (node ID, not name), status as csv "
+            "(relay-validated, e.g. failed,cancelled), created_since/"
+            "created_until (ISO-8601). Returns compact task rows (no stages "
+            "— fetch those per task via task_result), sorted newest-first "
+            "client-side, first limit (default 50). Relay 4xx rejections "
+            "(400 non-admin foreign submitted_by, 422 unknown status) come "
+            "back as clear errors."
+        ),
+    )(task_list)
 
 
 async def _track_task(

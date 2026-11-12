@@ -14,6 +14,7 @@ from iowap_client_mcp.nodecli import (
     NodeCliError,
     NodeCliTimeoutError,
     find_node_cli,
+    parse_relay_error,
     resolve_node_cli,
     run_node_cli,
     run_node_cli_text,
@@ -222,3 +223,35 @@ def test_spawn_failure_maps_to_nodecli_error(monkeypatch) -> None:
     )
     with pytest.raises(NodeCliError, match="not found"):
         asyncio.run(run_node_cli(["node", "list"]))
+
+
+# ---------------------------------------------------------------------------
+# parse_relay_error: relay HTTP rejections inside node-cli errors (T-235)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_relay_error_extracts_code_and_message() -> None:
+    """Live node-cli 422 stderr line: 'task list failed: HTTP 422: <msg>'."""
+    parsed = parse_relay_error(
+        "task list failed: HTTP 422: Unknown task status: fail. "
+        "Valid statuses: pending, running, completed, failed, cancelled"
+    )
+    assert parsed == (
+        422,
+        (
+            "Unknown task status: fail. "
+            "Valid statuses: pending, running, completed, failed, cancelled"
+        ),
+    )
+
+
+def test_parse_relay_error_parses_any_http_code() -> None:
+    """400 (foreign submitted_by) and 500 both parse — tools decide the mapping."""
+    assert parse_relay_error("x failed: HTTP 400: bad request") == (400, "bad request")
+    assert parse_relay_error("boom: HTTP 500: internal error") == (500, "internal error")
+
+
+def test_parse_relay_error_no_match_returns_none() -> None:
+    """Runner noise without an HTTP status line must not be misread as a code."""
+    assert parse_relay_error("node-cli not found on this host") is None
+    assert parse_relay_error("node-cli exit 2: usage: node-cli ...") is None

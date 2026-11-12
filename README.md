@@ -23,6 +23,7 @@ curated toolset:
 | `relay_status` | Relay health, queue depth, task counters |
 | `node_list` | Fleet overview (IDs, status, capabilities, load) |
 | `capabilities_list` | What the relay can do — including input schemas **and** the node IDs that own each capability |
+| `task_list` | Filtered task query (submitted_by, owner_node_id, status csv, created window) — compact rows, newest-first, first `limit` (default 50) |
 | `task_submit` | Submit a task against a capability (optional short wait) |
 | `task_result` | Poll a task result |
 | `artifact_download` | Fetch a task artifact to a local path |

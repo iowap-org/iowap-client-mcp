@@ -32,12 +32,14 @@ __all__ = [
     "NodeCliError",
     "NodeCliTimeoutError",
     "find_node_cli",
+    "parse_relay_error",
     "resolve_node_cli",
     "run_node_cli",
     "run_node_cli_text",
 ]
 
 _PIN_RE = re.compile(r"^node_cli_path:(.*)$", re.MULTILINE)
+_HTTP_ERROR_RE = re.compile(r"HTTP (\d{3}): (.+)")
 
 
 class NodeCliError(RuntimeError):
@@ -141,6 +143,23 @@ async def run_node_cli(
             f"node-cli produced non-JSON output (exit {rc}): "
             f"{stderr_tail or stdout.strip()[:300]}"
         ) from exc
+
+
+def parse_relay_error(text: str) -> tuple[int, str] | None:
+    """Extract ``(http_code, relay_message)`` from a node-cli failure line.
+
+    node-cli renders relay rejections on stderr as
+    ``task list failed: HTTP 422: Unknown task status: fail. ...`` and the
+    runner attaches that line as the stderr tail of ``NodeCliError``. This
+    is the tool-side pendant of the relay's own ``_parse_relay_error``: it
+    splits status code and human message so tools can raise understandable
+    errors instead of raw runner noise. Returns None when ``text`` carries
+    no HTTP status line (transport/setup failures stay unclassified).
+    """
+    match = _HTTP_ERROR_RE.search(text)
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2).strip()
 
 
 async def _run(
