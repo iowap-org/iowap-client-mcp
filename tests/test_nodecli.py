@@ -109,6 +109,50 @@ def test_resolve_falls_back_to_bare_name_when_nothing_found(
 
 
 # ---------------------------------------------------------------------------
+# T-250 rebrand candidates: iowap-cli rides the same fallback depth
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_order_node_cli_first_iowap_cli_after(fake_home: Path) -> None:
+    """T-250 rebrand (shim strategy): the iowap-cli entries mirror the
+    node-cli entries — same three directories, same order, strictly AFTER
+    them, so existing installs keep resolving node-cli exactly as before."""
+    assert nodecli._candidates(fake_home) == (
+        str(fake_home / ".hermes/hermes-agent/venv/bin/node-cli"),
+        str(fake_home / ".local/bin/node-cli"),
+        "/usr/local/bin/node-cli",
+        str(fake_home / ".hermes/hermes-agent/venv/bin/iowap-cli"),
+        str(fake_home / ".local/bin/iowap-cli"),
+        "/usr/local/bin/iowap-cli",
+    )
+
+
+def test_iowap_cli_candidate_resolves_when_node_cli_missing(
+    fake_home: Path, monkeypatch
+) -> None:
+    """No pin, dead PATH, no node-cli anywhere — the rebrand binary in a
+    known location still resolves the runner (candidates stay fallback
+    depth of the pin → PATH → candidates chain)."""
+    monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
+    rebrand = _fake_exe(
+        fake_home / ".hermes" / "hermes-agent" / "venv" / "bin" / "iowap-cli"
+    )
+    assert find_node_cli(home=fake_home) == str(rebrand)
+
+
+def test_node_cli_candidate_wins_over_iowap_cli_when_both_exist(
+    fake_home: Path, monkeypatch
+) -> None:
+    """Order guarantee: an installed node-cli candidate is preferred; the
+    rebrand name is reached only when every node-cli probe already missed."""
+    monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
+    venv_bin = fake_home / ".hermes" / "hermes-agent" / "venv" / "bin"
+    node_cli = _fake_exe(venv_bin / "node-cli")
+    _fake_exe(venv_bin / "iowap-cli")
+    assert find_node_cli(home=fake_home) == str(node_cli)
+
+
+# ---------------------------------------------------------------------------
 # Runner contract
 # ---------------------------------------------------------------------------
 

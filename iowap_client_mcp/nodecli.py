@@ -51,11 +51,21 @@ class NodeCliTimeoutError(NodeCliError):
 
 
 def _candidates(home: Path) -> tuple[str, ...]:
-    """Known install locations probed at call time (mirrors plugin_api)."""
+    """Known install locations probed at call time (mirrors plugin_api).
+
+    T-250 rebrand (shim strategy): the parallel ``iowap-cli`` entries mirror
+    the ``node-cli`` entries — same three directories, same order, strictly
+    AFTER them, so existing installs keep resolving node-cli exactly as
+    before and the rebrand name is reached only as final fallback depth.
+    """
     return (
         str(home / ".hermes/hermes-agent/venv/bin/node-cli"),
         str(home / ".local/bin/node-cli"),
         "/usr/local/bin/node-cli",
+        # T-250: parallel rebrand binaries — identical dirs, after node-cli.
+        str(home / ".hermes/hermes-agent/venv/bin/iowap-cli"),
+        str(home / ".local/bin/iowap-cli"),
+        "/usr/local/bin/iowap-cli",
     )
 
 
