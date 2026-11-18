@@ -282,17 +282,23 @@ def test_task_result_not_found_is_structured(monkeypatch) -> None:
     assert "owner" in result["hint"]
 
 
-def test_task_result_propagates_other_cli_errors(monkeypatch) -> None:
+def test_task_result_transport_error_becomes_structured_result(monkeypatch) -> None:
+    """T-274: non-'not found' NodeCliError paths return the error dict.
+
+    Supersedes the old propagate-verbatim contract ('Error executing tool'
+    on the MCP host loses the relay detail): relay rejections AND transport
+    failures become {'error': {http_status, detail, raw}} results.
+    """
     def _fake(args, **kwargs):
-        raise NodeCliError("node-cli exit 7: relay unreachable")
+        raise NodeCliError(
+            "node-cli exit 7 (task result task_T2): relay unreachable"
+        )
 
     monkeypatch.setattr(tools, "run_node_cli", _fake)
-    try:
-        asyncio.run(task_result("task_T2"))
-    except NodeCliError:
-        pass
-    else:
-        raise AssertionError("non-notfound NodeCliError must propagate")
+    result = asyncio.run(task_result("task_T2"))
+    assert result == {
+        "error": {"http_status": None, "detail": "relay unreachable", "raw": "relay unreachable"}
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -362,3 +368,227 @@ def test_submit_accepts_digits_in_node_ids(monkeypatch) -> None:
         task_submit("mc.list.players", {}, owner_node_id="AMKJA9AE")
     )
     assert result["task_id"] == "task_D9"
+
+
+# ---------------------------------------------------------------------------
+# T-274: structured relay-error results — NodeCliError never bubbles raw
+# to the MCP host ('Error executing tool' loses the relay detail); the
+# three write tools convert it into {'error': {http_status, detail, raw}}.
+# Fixture messages replicate the runner's own NodeCliError formats
+# (nodecli.run_node_cli / _run) so parse_relay_error() sees the same
+# stderr tail it sees in production.
+# ---------------------------------------------------------------------------
+
+
+def test_submit_404_relay_body_returns_error_result(monkeypatch) -> None:
+    """Submit rejected with HTTP 404 + relay body → parsed error dict, no raise."""
+    stderr_tail = (
+        'submit failed: HTTP 404: '
+        '{"detail": "capability missing.cap unknown to the relay"}'
+    )
+    calls: list[str] = []
+
+    def _fake(args, **kwargs):
+        calls.append(" ".join(args))
+        raise NodeCliError(f"node-cli produced no JSON output (exit 1): {stderr_tail}")
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+
+    async def _track(task_id: str, **meta) -> dict:
+        raise AssertionError("failed submit must not touch the track store")
+
+    monkeypatch.setattr(tools, "_track_task", _track)
+    result = asyncio.run(task_submit("missing.cap", {"prompt": "x"}))
+    assert result == {
+        "error": {
+            "http_status": 404,
+            "detail": '{"detail": "capability missing.cap unknown to the relay"}',
+            "raw": stderr_tail,
+        }
+    }
+    assert calls[0].startswith("task submit")  # the submit path raised, nothing else ran
+
+
+def test_submit_500_without_body_stays_unclassified(monkeypatch) -> None:
+    """Relay 500 with no body: no parseable status → http_status None, detail = raw.
+
+    Pins parse_relay_error's boundary — a bare ``HTTP 500:`` line carries no
+    message body, so the tool falls back to the raw stderr tail for both
+    detail and raw.
+    """
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli produced no JSON output (exit 1): submit failed: HTTP 500:"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_submit("chat.ai", {"prompt": "x"}))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "submit failed: HTTP 500:",
+            "raw": "submit failed: HTTP 500:",
+        }
+    }
+
+
+def test_submit_binary_missing_returns_transport_error_result(monkeypatch) -> None:
+    """node-cli binary missing (spawn FileNotFoundError) → unclassified error dict."""
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli not found on this host (tried pin → PATH → candidates): "
+            "[Errno 2] No such file or directory: 'node-cli'"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_submit("chat.ai", {"prompt": "x"}))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "[Errno 2] No such file or directory: 'node-cli'",
+            "raw": "[Errno 2] No such file or directory: 'node-cli'",
+        }
+    }
+
+
+def test_task_result_404_relay_body_returns_error_result(monkeypatch) -> None:
+    """A 404 whose body avoids the literal 'not found' is NOT the legacy branch."""
+    stderr_tail = (
+        'task result failed: HTTP 404: '
+        '{"detail": "task deleted; retention window passed"}'
+    )
+
+    def _fake(args, **kwargs):
+        raise NodeCliError(f"node-cli produced no JSON output (exit 1): {stderr_tail}")
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_result("task_GONE1"))
+    assert result == {
+        "error": {
+            "http_status": 404,
+            "detail": '{"detail": "task deleted; retention window passed"}',
+            "raw": stderr_tail,
+        }
+    }
+
+
+def test_task_result_500_without_body_stays_unclassified(monkeypatch) -> None:
+    """task_result HTTP 500 without body → http_status None, detail = raw."""
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli produced no JSON output (exit 1): task result failed: HTTP 500:"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_result("task_R5"))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "task result failed: HTTP 500:",
+            "raw": "task result failed: HTTP 500:",
+        }
+    }
+
+
+def test_task_result_binary_missing_returns_transport_error_result(monkeypatch) -> None:
+    """Transport failure surface mirrors task_submit's (same error dict)."""
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli not found on this host (tried pin → PATH → candidates): "
+            "[Errno 2] No such file or directory: 'node-cli'"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_result("task_R6"))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "[Errno 2] No such file or directory: 'node-cli'",
+            "raw": "[Errno 2] No such file or directory: 'node-cli'",
+        }
+    }
+
+
+def test_task_result_notfound_wording_wins_over_http_parsing(monkeypatch) -> None:
+    """The legacy 'not found' branch stays exactly as-is — checked FIRST.
+
+    Even when the error carries a parseable HTTP status (404 + 'task not
+    found'), the pre-T-274 result (task_id + status: not_found + hint, no
+    'error' key) must keep winning.
+    """
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli produced no JSON output (exit 1): "
+            "task result failed: HTTP 404: task not found"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(task_result("task_GONE2"))
+    assert result["status"] == "not_found"
+    assert result["task_id"] == "task_GONE2"
+    assert "hint" in result
+    assert "error" not in result
+
+
+def test_artifact_download_404_relay_body_returns_error_result(monkeypatch, tmp_path) -> None:
+    """Artifact gone: relay 404 with 'Artifact not found' body — no legacy
+    special case exists here, so this lands in the error dict. The tool also
+    guarantees the local target stays absent (no CLI progress → no file)."""
+    target = tmp_path / "gone.png"
+    stderr_tail = (
+        'artifact download failed: HTTP 404: {"detail": "Artifact not found"}'
+    )
+
+    def _fake(args, **kwargs):
+        raise NodeCliError(f"node-cli produced no JSON output (exit 1): {stderr_tail}")
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(artifact_download("art_GONE", str(target)))
+    assert result == {
+        "error": {
+            "http_status": 404,
+            "detail": '{"detail": "Artifact not found"}',
+            "raw": stderr_tail,
+        }
+    }
+    assert not target.exists()  # no partial write on a rejected download
+
+
+def test_artifact_download_500_without_body_stays_unclassified(monkeypatch, tmp_path) -> None:
+    """artifact_download HTTP 500 without body → http_status None, detail = raw."""
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli produced no JSON output (exit 1): "
+            "artifact download failed: HTTP 500:"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(artifact_download("art_X", str(tmp_path / "x.bin")))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "artifact download failed: HTTP 500:",
+            "raw": "artifact download failed: HTTP 500:",
+        }
+    }
+
+
+def test_artifact_download_binary_missing_returns_transport_error_result(
+    monkeypatch, tmp_path
+) -> None:
+    """Transport failure surface mirrors the other write tools."""
+    def _fake(args, **kwargs):
+        raise NodeCliError(
+            "node-cli not found on this host (tried pin → PATH → candidates): "
+            "[Errno 2] No such file or directory: 'node-cli'"
+        )
+
+    monkeypatch.setattr(tools, "run_node_cli", _fake)
+    result = asyncio.run(artifact_download("art_Y", str(tmp_path / "y.bin")))
+    assert result == {
+        "error": {
+            "http_status": None,
+            "detail": "[Errno 2] No such file or directory: 'node-cli'",
+            "raw": "[Errno 2] No such file or directory: 'node-cli'",
+        }
+    }

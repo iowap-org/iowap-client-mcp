@@ -4,6 +4,10 @@ v1 read set (T-003): relay_status, node_list, capabilities_list, docs.
 The write set (task_submit/task_result/artifact_download) lands in T-004.
 T-235 adds task_list to the read set — filtered task queries on the
 node-cli task-list filters of the T-268 server backend.
+T-274 makes the write set error-transparent: relay rejections and
+transport failures return ``{'error': {http_status, detail, raw}}``
+results instead of bubbling NodeCliError (the task_result 'not found'
+branch predates this and stays).
 Destructive surface is deliberately absent — see the project DECISIONS.md.
 """
 
@@ -334,6 +338,51 @@ def _allowed_capabilities() -> set[str] | None:
     return allowed or None
 
 
+# T-274: the runner embeds the stderr tail after one of three fixed
+# preambles (see nodecli.run_node_cli/_run); this recovers the tail verbatim.
+_RUNNER_TAIL_RE = re.compile(
+    r"^node-cli (?:produced (?:no JSON|non-JSON) output \(exit \d+\)"
+    r"|exit \d+ \(.*?\)"
+    r"|not found on this host \(tried pin → PATH → candidates\)"
+    r"): (.*)$",
+    re.DOTALL,
+)
+
+
+def _stderr_tail(exc: NodeCliError) -> str:
+    """Peel the runner prefix off a NodeCliError to recover the stderr tail.
+
+    The runner raises fixed preambles with the child's stderr tail attached
+    after ``: ``; this recovers that tail so the error result carries what
+    stderr actually said. Unmatched formats (timeout line, future runner
+    variants) fall back to the full message — diagnostics, never worth
+    raising over.
+    """
+    text = str(exc)
+    match = _RUNNER_TAIL_RE.match(text)
+    if match is None:
+        return text
+    return match.group(1).strip() or text
+
+
+def _relay_error_result(exc: NodeCliError) -> dict[str, Any]:
+    """Structured tool-result replacement for a NodeCliError (T-274).
+
+    ``{'error': {'http_status': int | None, 'detail': relay message,
+    'raw': stderr tail}}`` — parse_relay_error() classifies the runner's
+    embedded stderr tail (parsed on the tail, not the full message, so a
+    payload that itself contains ``HTTP <code>:`` text never confuses the
+    classification); without an HTTP status line (transport errors, a bare
+    ``HTTP 500:``) both ``detail`` and ``raw`` degrade to the tail itself.
+    """
+    raw = _stderr_tail(exc)
+    parsed = parse_relay_error(raw)
+    if parsed is None:
+        return {"error": {"http_status": None, "detail": raw, "raw": raw}}
+    code, message = parsed
+    return {"error": {"http_status": code, "detail": message, "raw": raw}}
+
+
 async def task_submit(
     capability: str,
     payload: dict[str, Any],
@@ -361,6 +410,12 @@ async def task_submit(
     ``wait_seconds`` (capped at 90) polls for a short while; long-running
     tasks should be polled via ``task_result`` instead. ``name`` labels
     the row on the desktop Tasks page (optional).
+
+    Relay rejections and transport failures land in
+    ``{'error': {'http_status', 'detail', 'raw'}}`` (T-274) instead of
+    raising — ``detail`` carries the relay message when the stderr tail
+    parses to an HTTP status, ``raw`` the tail itself. Validation errors
+    (payload shape, node ID, allowlist) still raise.
     """
     if not isinstance(payload, dict):
         raise TypeError("payload must be a JSON object (dict)")
@@ -382,7 +437,10 @@ async def task_submit(
         args += ["--name", name[:120]]
     if owner_node_id:
         args += ["--owner", owner_node_id]
-    submit_payload = await run_node_cli(args, timeout=30.0)
+    try:
+        submit_payload = await run_node_cli(args, timeout=30.0)
+    except NodeCliError as exc:
+        return _relay_error_result(exc)  # T-274: no raw exception to the host
     task_id = submit_payload.get("task_id")
 
     result: dict[str, Any] = {
@@ -430,12 +488,17 @@ async def task_result(task_id: str) -> dict[str, Any]:
     (``submitted_by``) — this node sees its own owner-directed results.
     If the CLI still reports ``not found`` (different identity, pruned
     task), that is surfaced as ``status: "not_found"`` with a hint, not
-    as a tool failure.
+    as a tool failure. Every other NodeCliError (relay rejection,
+    transport failure) becomes a ``{'error': {'http_status', 'detail',
+    'raw'}}`` result instead of raising (T-274).
     """
     try:
         payload = await run_node_cli(["task", "result", task_id], timeout=30.0)
     except NodeCliError as exc:
-        if "not found" in str(exc):
+        # T-274: the legacy 'not found' wording is relay-side, so it is matched
+        # on the stderr tail — the runner's own transport preamble ("node-cli
+        # not found on this host…") reaches the error result, not this branch.
+        if "not found" in _stderr_tail(exc):
             return {
                 "task_id": task_id,
                 "status": "not_found",
@@ -445,7 +508,7 @@ async def task_result(task_id: str) -> dict[str, Any]:
                     "can read it; submit from the owning/sending node's token"
                 ),
             }
-        raise
+        return _relay_error_result(exc)  # T-274: the remaining error paths
     task = payload.get("task") or {}
     stages = payload.get("stages") or []
     return {
@@ -470,7 +533,10 @@ async def artifact_download(
     directory). This is a FILE WRITE: an existing file is refused unless
     ``overwrite: true`` is passed (the caller states the destruction
     explicitly). The node-cli writes the bytes; this tool checks the file
-    afterwards so the caller does not trust the CLI message alone.
+    afterwards so the caller does not trust the CLI message alone. A
+    failed download (relay 404/5xx, transport failure) returns
+    ``{'error': {'http_status', 'detail', 'raw'}}`` instead of raising
+    (T-274); the local target stays untouched.
     """
     target = Path(output_path).expanduser()
     if not target.is_absolute():
@@ -479,10 +545,13 @@ async def artifact_download(
         raise FileExistsError(
             f"{target} exists — pass overwrite=true to replace the file explicitly"
         )
-    payload = await run_node_cli(
-        ["artifact", "download", artifact_id, "--output", str(target)],
-        timeout=300.0,
-    )
+    try:
+        payload = await run_node_cli(
+            ["artifact", "download", artifact_id, "--output", str(target)],
+            timeout=300.0,
+        )
+    except NodeCliError as exc:
+        return _relay_error_result(exc)  # T-274: no raw exception to the host
     exists = target.is_file()
     return {
         "artifact_id": artifact_id,
@@ -505,7 +574,9 @@ def register_write_tools(server: Any) -> None:
             "wait_seconds<=90 polls briefly; long tasks: poll task_result "
             "afterwards. Auto-merges into the task tracking store "
             "(in-process). Operators can restrict submitable capabilities "
-            "via IOWAP_ALLOW_CAPS (csv env; unset = all)."
+            "via IOWAP_ALLOW_CAPS (csv env; unset = all). Relay rejections "
+            "and transport failures return {'error': {http_status, detail, "
+            "raw}} instead of raising."
         ),
     )(task_submit)
     _t(
@@ -514,7 +585,9 @@ def register_write_tools(server: Any) -> None:
             "Fetch task state + result (first completed stage, envelope "
             "unwrapped). Read scope: admin, owner node, or the sender "
             "(submitted_by, T-227) — this node can fetch its own "
-            "owner-directed results."
+            "owner-directed results. Unreadable tasks come back as "
+            "{status: 'not_found', hint}; other relay/transport failures "
+            "as {'error': {http_status, detail, raw}} instead of raising."
         ),
     )(task_result)
     _t(
@@ -522,6 +595,8 @@ def register_write_tools(server: Any) -> None:
         description=(
             "Download a task artifact to an absolute local path; refuses to "
             "overwrite an existing file unless overwrite=true. Verifies the "
-            "file exists afterwards and reports its size."
+            "file exists afterwards and reports its size. Failed downloads "
+            "(relay 404/5xx, transport) return {'error': {http_status, "
+            "detail, raw}} instead of raising; the target stays untouched."
         ),
     )(artifact_download)
