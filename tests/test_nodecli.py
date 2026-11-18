@@ -41,8 +41,8 @@ def fake_home(tmp_path: Path) -> Path:
 
 
 def test_pin_wins_over_path(fake_home: Path, tmp_path: Path, monkeypatch) -> None:
-    pin = _fake_exe(fake_home / "iowap" / "bin" / "node-cli")
-    path_cli = _fake_exe(tmp_path / "pathbin" / "node-cli")
+    pin = _fake_exe(fake_home / "iowap" / "bin" / "iowap-cli")
+    path_cli = _fake_exe(tmp_path / "pathbin" / "iowap-cli")
     monkeypatch.setenv("PATH", str(path_cli.parent))
     (fake_home / ".relay").mkdir()
     (fake_home / ".relay" / "node.yaml").write_text(
@@ -58,7 +58,7 @@ def test_stale_pin_falls_through_to_path(
     (fake_home / ".relay" / "node.yaml").write_text(
         'node_cli_path: "/gone/away/node-cli"\n', encoding="utf-8"
     )
-    path_cli = _fake_exe(tmp_path / "pathbin" / "node-cli")
+    path_cli = _fake_exe(tmp_path / "pathbin" / "iowap-cli")
     monkeypatch.setenv("PATH", str(path_cli.parent))
     assert find_node_cli(home=fake_home) == str(path_cli)
 
@@ -73,13 +73,13 @@ def test_indented_pin_never_counts(fake_home: Path, tmp_path: Path, monkeypatch)
         "    node_cli_path: /evil/inside/cap\n",
         encoding="utf-8",
     )
-    path_cli = _fake_exe(tmp_path / "pathbin" / "node-cli")
+    path_cli = _fake_exe(tmp_path / "pathbin" / "iowap-cli")
     monkeypatch.setenv("PATH", str(path_cli.parent))
     assert find_node_cli(home=fake_home) == str(path_cli)
 
 
 def test_pin_quotes_and_spaces_are_stripped(fake_home: Path, tmp_path: Path) -> None:
-    pin = _fake_exe(tmp_path / "iowap" / "bin" / "node-cli")
+    pin = _fake_exe(tmp_path / "iowap" / "bin" / "iowap-cli")
     (fake_home / ".relay").mkdir()
     (fake_home / ".relay" / "node.yaml").write_text(
         f"node_cli_path:  '{pin}'  \n", encoding="utf-8"
@@ -93,7 +93,7 @@ def test_no_pin_no_path_returns_none(fake_home: Path, monkeypatch) -> None:
 
 
 def test_candidate_probed_as_fallback(fake_home: Path, tmp_path: Path, monkeypatch) -> None:
-    cand = _fake_exe(tmp_path / "cand" / "node-cli")
+    cand = _fake_exe(tmp_path / "cand" / "iowap-cli")
     monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
     monkeypatch.setattr(
         nodecli, "_candidates", lambda _h: (cand,)
@@ -105,34 +105,32 @@ def test_resolve_falls_back_to_bare_name_when_nothing_found(
     fake_home: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
-    assert resolve_node_cli(home=fake_home) == "node-cli"
+    assert resolve_node_cli(home=fake_home) == "iowap-cli"
 
 
 # ---------------------------------------------------------------------------
-# T-250 rebrand candidates: iowap-cli rides the same fallback depth
+# T-250 shim sunset: only iowap-cli candidates remain
 # ---------------------------------------------------------------------------
 
 
-def test_candidates_order_node_cli_first_iowap_cli_after(fake_home: Path) -> None:
-    """T-250 rebrand (shim strategy): the iowap-cli entries mirror the
-    node-cli entries — same three directories, same order, strictly AFTER
-    them, so existing installs keep resolving node-cli exactly as before."""
+def test_candidates_are_iowap_cli_only(fake_home: Path) -> None:
+    """T-250 shim sunset (0.1.7): the known-locations list probes exactly
+    the three iowap-cli paths, order preserved — the legacy node-cli
+    console script no longer exists, its locations are dead candidates."""
     assert nodecli._candidates(fake_home) == (
-        str(fake_home / ".hermes/hermes-agent/venv/bin/node-cli"),
-        str(fake_home / ".local/bin/node-cli"),
-        "/usr/local/bin/node-cli",
         str(fake_home / ".hermes/hermes-agent/venv/bin/iowap-cli"),
         str(fake_home / ".local/bin/iowap-cli"),
         "/usr/local/bin/iowap-cli",
     )
+    assert not any("node-cli" in c for c in nodecli._candidates(fake_home))
 
 
-def test_iowap_cli_candidate_resolves_when_node_cli_missing(
+def test_known_location_candidate_resolves_when_pin_and_path_miss(
     fake_home: Path, monkeypatch
 ) -> None:
-    """No pin, dead PATH, no node-cli anywhere — the rebrand binary in a
-    known location still resolves the runner (candidates stay fallback
-    depth of the pin → PATH → candidates chain)."""
+    """No pin, dead PATH, no shims — the binary in a known location still
+    resolves the runner (candidates stay fallback depth of the
+    pin → PATH → candidates chain)."""
     monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
     rebrand = _fake_exe(
         fake_home / ".hermes" / "hermes-agent" / "venv" / "bin" / "iowap-cli"
@@ -140,16 +138,15 @@ def test_iowap_cli_candidate_resolves_when_node_cli_missing(
     assert find_node_cli(home=fake_home) == str(rebrand)
 
 
-def test_node_cli_candidate_wins_over_iowap_cli_when_both_exist(
-    fake_home: Path, monkeypatch
-) -> None:
-    """Order guarantee: an installed node-cli candidate is preferred; the
-    rebrand name is reached only when every node-cli probe already missed."""
+def test_first_candidate_directory_wins(fake_home: Path, monkeypatch) -> None:
+    """Order guarantee among the remaining candidates: the first listed
+    known location (venv bin) beats later ones."""
     monkeypatch.setattr(nodecli.shutil, "which", lambda *_: None)
     venv_bin = fake_home / ".hermes" / "hermes-agent" / "venv" / "bin"
-    node_cli = _fake_exe(venv_bin / "node-cli")
-    _fake_exe(venv_bin / "iowap-cli")
-    assert find_node_cli(home=fake_home) == str(node_cli)
+    local_bin = fake_home / ".local" / "bin"
+    first = _fake_exe(venv_bin / "iowap-cli")
+    _fake_exe(local_bin / "iowap-cli")
+    assert find_node_cli(home=fake_home) == str(first)
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,20 @@ All notable changes to `iowap-client-mcp` are documented here
 (Keep a Changelog format, SemVer versions). Releases before 0.1.5
 predate this file — see `git log` for their history.
 
+## [0.1.7] — 2026-11-18
+
+### Changed (T-250 — node-cli shim sunset)
+
+- Binary resolution probes only `iowap-cli` now: `_candidates()` drops the
+  three legacy `node-cli` known locations and `find_node_cli` PATH-probes
+  `iowap-cli` (iowap-node 2.3.43 removed the `node-cli`/`node-daemon`
+  console scripts, so their locations could only ever resolve stale
+  binaries). The `~/.relay/node.yaml` `node_cli_path` pin stays the FIRST
+  link of the chain and records the stamped `iowap-cli` binary.
+- `resolve_node_cli()`'s no-resolution fallback spawn name is `iowap-cli`
+  (a clear `FileNotFoundError` against the binary family that actually
+  exists, not against a removed shim).
+
 ## [0.1.6] — 2026-11-18
 
 ### Changed (T-274 — MCP error transparency)

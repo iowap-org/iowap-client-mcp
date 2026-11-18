@@ -53,16 +53,11 @@ class NodeCliTimeoutError(NodeCliError):
 def _candidates(home: Path) -> tuple[str, ...]:
     """Known install locations probed at call time (mirrors plugin_api).
 
-    T-250 rebrand (shim strategy): the parallel ``iowap-cli`` entries mirror
-    the ``node-cli`` entries — same three directories, same order, strictly
-    AFTER them, so existing installs keep resolving node-cli exactly as
-    before and the rebrand name is reached only as final fallback depth.
+    T-250 shim sunset (0.1.7): only the three ``iowap-cli`` locations are
+    probed — the legacy ``node-cli`` console script is gone from every
+    post-sunset iowap-node install, so probing its paths is dead code.
     """
     return (
-        str(home / ".hermes/hermes-agent/venv/bin/node-cli"),
-        str(home / ".local/bin/node-cli"),
-        "/usr/local/bin/node-cli",
-        # T-250: parallel rebrand binaries — identical dirs, after node-cli.
         str(home / ".hermes/hermes-agent/venv/bin/iowap-cli"),
         str(home / ".local/bin/iowap-cli"),
         "/usr/local/bin/iowap-cli",
@@ -94,7 +89,7 @@ def find_node_cli(home: Path | None = None) -> str | None:
         candidate = Path(pin).expanduser()
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
-    found = shutil.which("node-cli")
+    found = shutil.which("iowap-cli")
     if found:
         return found
     for candidate in _candidates(home):
@@ -107,7 +102,7 @@ def resolve_node_cli(home: Path | None = None) -> str:
     found = find_node_cli(home)
     if found:
         return found
-    return "node-cli"  # let the spawn fail with a clear FileNotFoundError
+    return "iowap-cli"  # let the spawn fail with a clear FileNotFoundError
 
 
 async def run_node_cli_text(
