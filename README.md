@@ -7,7 +7,7 @@ without teaching every agent the node CLI's pitfalls.
 
 IOWAP is a distributed capability mesh: the [relay](https://github.com/iowap-org/iowap-server)
 routes tasks, [nodes](https://github.com/iowap-org/iowap-node) execute them.
-Today, an AI agent that wants to use IOWAP shells out to `node-cli --json`.
+Today, an AI agent that wants to use IOWAP shells out to `iowap-cli --json`.
 That works, but every agent has to relearn the same pitfalls itself: response
 envelopes that must be unwrapped, node IDs vs. names, the global flag position,
 which commands are safe and which mutate the node. Knowledge ends up in one
@@ -15,7 +15,7 @@ agent's skill file instead of in code.
 
 ## The answer
 
-`iowap-mcp` is an MCP stdio server that wraps `node-cli` behind a small,
+`iowap-mcp` is an MCP stdio server that wraps `iowap-cli` behind a small,
 curated toolset:
 
 | Tool | Purpose |
@@ -56,11 +56,11 @@ machine that owns it. POSIX host (Linux/macOS) — no Windows support.
 pip install "iowap-client-mcp[mcp]"
 ```
 
-…or let the local node install it: `node-cli mcp install` (own venv,
+…or let the local node install it: `iowap-cli mcp install` (own venv,
 client-neutral, PyPI registry). Requires a node installation of IOWAP on
 the same host (see [iowap-node](https://github.com/iowap-org/iowap-node)) —
-the server shells out to the installed `node-cli`. Both wheels are regular
-PyPI packages: `node-cli update check/apply` keeps node and toolkit current
+the server shells out to the installed `iowap-cli`. Both wheels are regular
+PyPI packages: `iowap-cli update check/apply` keeps node and toolkit current
 together (toolkit upgrades need no service restart — the server process
 reloads on the next client spawn).
 
