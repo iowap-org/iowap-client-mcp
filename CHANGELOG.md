@@ -4,6 +4,27 @@ All notable changes to `iowap-client-mcp` are documented here
 (Keep a Changelog format, SemVer versions). Releases before 0.1.5
 predate this file — see `git log` for their history.
 
+## [0.1.8] — 2026-11-21
+
+### Added (T-004 — Streamable HTTP transport)
+
+- `iowap-mcp --http` serves the same curated 8-tool set via the MCP
+  Streamable HTTP transport at `/mcp` (SDK-native `streamable_http_app` from
+  `mcp` 2.x — no hand-built ASGI). stdio stays the default transport and is
+  unchanged; existing MCP-client configs keep working.
+- Auth is a static operator Bearer token from the `IOWAP_MCP_BEARER` env,
+  verified by the SDK's own bearer middleware (constant-time exact match,
+  no scopes/resources). Requests with a missing or wrong token get `401` +
+  `WWW-Authenticate: Bearer`.
+- Fail closed: the process refuses to start the HTTP transport when
+  `IOWAP_MCP_BEARER` is unset or blank (exit 1 with a clear message) — it
+  never serves an unauthenticated endpoint. The stdio path never reads that
+  env.
+- Bind defaults to `127.0.0.1` (container-internal loopback); the port comes
+  from `--port` (CLI) or `IOWAP_MCP_PORT` (env), default `7781`. The
+  `IOWAP_ALLOW_CAPS` allowlist applies identically over HTTP (same tool
+  objects, per-call env read).
+
 ## [0.1.7] — 2026-11-18
 
 ### Changed (T-250 — node-cli shim sunset)

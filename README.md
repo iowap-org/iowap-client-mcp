@@ -47,8 +47,29 @@ unset means all) — with `hermes mcp add` that is an `--env` line away.
 `overwrite: true` states the replacement explicitly.
 
 Scope is one host: the server binds the local node to local MCP clients.
-There is deliberately no remote/HTTP variant — the node identity stays on the
-machine that owns it. POSIX host (Linux/macOS) — no Windows support.
+POSIX host (Linux/macOS) — no Windows support.
+
+## HTTP transport (optional)
+
+For remote-topology setups (e.g. the node runs in a container on Docker
+Desktop and the agent lives on the same host), `iowap-mcp --http` serves the
+same toolset via the MCP Streamable HTTP transport at `/mcp`:
+
+```bash
+export IOWAP_MCP_BEARER='<long random token>'   # required — no token, no start
+iowap-mcp --http [--port 7781]                  # binds 127.0.0.1 by default
+```
+
+- **Bearer auth:** every request must carry `Authorization: Bearer <token>`;
+anything else gets `401`. The token comes from the `IOWAP_MCP_BEARER` env
+— the process **fails closed**: without it (or with a blank value) the
+HTTP transport exits with an error instead of starting unauthenticated.
+- **stdio stays the default:** without `--http` the server behaves exactly
+as before (spawned by the MCP client, no env, no port). Existing client
+configs are unaffected.
+- **Same toolset, same guards:** HTTP serves the identical curated 8 tools —
+`IOWAP_ALLOW_CAPS` and the artifact-overwrite refusal apply unchanged.
+Point your MCP client at `http://127.0.0.1:7781/mcp` with the Bearer token.
 
 ## Install
 
