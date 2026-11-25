@@ -4,6 +4,23 @@ All notable changes to `iowap-client-mcp` are documented here
 (Keep a Changelog format, SemVer versions). Releases before 0.1.5
 predate this file — see `git log` for their history.
 
+## [0.2.0] — 2026-11-25
+
+### Changed (T-037 — MCP package split: stdio-Local vs. Container-HTTP)
+
+- **Breaking:** stdio-only. The Streamable-HTTP `/mcp` transport (T-004's
+  `--http` flag, Bearer auth, `IOWAP_MCP_BEARER` fail-closed behavior and
+  the `IOWAP_MCP_PORT` env) moved out of this package into the new
+  **iowap-node-mcp** package (PyPI), which imports this package's toolset
+  as a library. `iowap-client-mcp` is now the local-agent surface only.
+- The curated toolset (9 tools), envelope unwrap, node-cli resolution and
+  the tracking store stay here unchanged — `build_server` /
+  `iowap_client_mcp.tools` are the library the HTTP package imports; no
+  behavior change on the stdio path, existing MCP-client spawn configs keep
+  working. `iowap-mcp --http` now fails loudly at argument parsing (the
+  flag is gone, not silently aliased).
+- Install unchanged for local agents: `pip install "iowap-client-mcp[mcp]"`.
+
 ## [0.1.8] — 2026-11-21
 
 ### Added (T-004 — Streamable HTTP transport)

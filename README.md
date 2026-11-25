@@ -27,6 +27,7 @@ curated toolset:
 | `task_submit` | Submit a task against a capability (optional short wait) |
 | `task_result` | Poll a task result |
 | `artifact_download` | Fetch a task artifact to a local path |
+| `artifact_link` | Create a short-lived signed download URL for a task artifact (T-033) |
 | `docs` | Read the live relay documentation |
 
 The node CLI remains the source of truth for authentication and execution —
@@ -49,27 +50,20 @@ unset means all) — with `hermes mcp add` that is an `--env` line away.
 Scope is one host: the server binds the local node to local MCP clients.
 POSIX host (Linux/macOS) — no Windows support.
 
-## HTTP transport (optional)
+## Scope: stdio / local agents only (T-037)
 
-For remote-topology setups (e.g. the node runs in a container on Docker
-Desktop and the agent lives on the same host), `iowap-mcp --http` serves the
-same toolset via the MCP Streamable HTTP transport at `/mcp`:
+`iowap-client-mcp` is the **local-agent path**: stdio is the default and
+only transport (spawned by the MCP client on the same host, no env, no port).
 
-```bash
-export IOWAP_MCP_BEARER='<long random token>'   # required — no token, no start
-iowap-mcp --http [--port 7781]                  # binds 127.0.0.1 by default
-```
-
-- **Bearer auth:** every request must carry `Authorization: Bearer <token>`;
-anything else gets `401`. The token comes from the `IOWAP_MCP_BEARER` env
-— the process **fails closed**: without it (or with a blank value) the
-HTTP transport exits with an error instead of starting unauthenticated.
-- **stdio stays the default:** without `--http` the server behaves exactly
-as before (spawned by the MCP client, no env, no port). Existing client
-configs are unaffected.
-- **Same toolset, same guards:** HTTP serves the identical curated 8 tools —
-`IOWAP_ALLOW_CAPS` and the artifact-overwrite refusal apply unchanged.
-Point your MCP client at `http://127.0.0.1:7781/mcp` with the Bearer token.
+**Container-HTTP lives in `iowap-node-mcp`** (T-037 package split): the
+Streamable HTTP `/mcp` surface with Bearer auth (`IOWAP_MCP_BEARER`,
+fail closed — the former `iowap-mcp --http`, T-004) moved into the sibling
+package [iowap-node-mcp](https://github.com/iowap-org/iowap-node-mcp),
+which imports this package's toolset as a library. If your node runs in a
+container (Docker Desktop topology), the image already installs
+`iowap-node-mcp` and its entrypoint starts `iowap-node-mcp` on port 7781;
+point the MCP client at `http://127.0.0.1:7781/mcp` with the Bearer
+token — local MCP-client configs (`command: iowap-mcp`) remain unchanged.
 
 ## Install
 
