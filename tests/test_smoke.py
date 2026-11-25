@@ -51,7 +51,7 @@ def test_v1_read_toolset_is_registered_and_whitelisted() -> None:
 
     names = asyncio.run(list_tool_names())
     assert set(names) == set(ALL_TOOLS)
-    assert len(names) == len(set(names)) == 8
+    assert len(names) == len(set(names)) == 9
 
 
 def test_build_server_without_sdk(monkeypatch) -> None:

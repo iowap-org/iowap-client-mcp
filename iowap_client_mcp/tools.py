@@ -8,6 +8,8 @@ T-274 makes the write set error-transparent: relay rejections and
 transport failures return ``{'error': {http_status, detail, raw}}``
 results instead of bubbling NodeCliError (the task_result 'not found'
 branch predates this and stays).
+T-033 adds artifact_link to the read set — short-lived signed download
+URLs for relay artifacts, minted via node-cli; error-transparent too.
 Destructive surface is deliberately absent — see the project DECISIONS.md.
 """
 
@@ -37,6 +39,7 @@ __all__ = [
     "READ_TOOLS",
     "WRITE_TOOLS",
     "artifact_download",
+    "artifact_link",
     "capabilities_list",
     "docs",
     "node_list",
@@ -47,8 +50,7 @@ __all__ = [
     "task_result",
     "task_submit",
 ]
-
-READ_TOOLS = ("relay_status", "node_list", "capabilities_list", "docs", "task_list")
+READ_TOOLS = ("relay_status", "node_list", "capabilities_list", "docs", "task_list", "artifact_link")
 WRITE_TOOLS = ("task_submit", "task_result", "artifact_download")
 ALL_TOOLS = READ_TOOLS + WRITE_TOOLS
 
@@ -242,6 +244,40 @@ async def task_list(
     return {"count": len(limited), "tasks": limited}
 
 
+async def artifact_link(
+    artifact_id: str,
+    ttl_seconds: int | None = None,
+    max_downloads: int | None = None,
+) -> dict[str, Any]:
+    """Create a short-lived single-use download URL for a relay artifact (T-033).
+
+    The URL itself is the bearer — one GET downloads the file without an
+    ``Authorization`` header, then the link is exhausted (defaults:
+    900 s TTL, max 1 download; both server-clamped loud). This is a
+    READ-scope tool (it writes no files and only asks the relay to mint a
+    link); ``artifact_download`` remains the file-write variant. Relay
+    rejections (404/422) and transport failures return
+    ``{'error': {'http_status', 'detail', 'raw'}}`` instead of raising
+    (T-274).
+    """
+    argv = ["artifact", "link", artifact_id]
+    if ttl_seconds is not None:
+        argv += ["--ttl-seconds", str(int(ttl_seconds))]
+    if max_downloads is not None:
+        argv += ["--max-downloads", str(int(max_downloads))]
+    try:
+        payload = await run_node_cli(argv, timeout=30.0)
+    except NodeCliError as exc:
+        return _relay_error_result(exc)  # T-274: no raw exception to the host
+    return {
+        "artifact_id": artifact_id,
+        "url": payload.get("url"),
+        "expires_at": payload.get("expires_at"),
+        "max_downloads": payload.get("max_downloads"),
+        "cli_output": payload,
+    }
+
+
 def register_read_tools(server: Any) -> None:
     """Attach the v1 read toolset to a MCPServer instance."""
     _t: Callable[..., Any] = server.tool
@@ -289,6 +325,16 @@ def register_read_tools(server: Any) -> None:
             "back as clear errors."
         ),
     )(task_list)
+    _t(
+        name="artifact_link",
+        description=(
+            "Create a short-lived single-use download URL for a relay "
+            "artifact; the URL itself is the bearer. Optional ttl_seconds "
+            "(default 900, accepted 30..86400) and max_downloads (default 1, "
+            "cap 10). Relay/transport failures return {'error': "
+            "{http_status, detail, raw}} instead of raising."
+        ),
+    )(artifact_link)
 
 
 async def _track_task(

@@ -192,7 +192,7 @@ def test_http_tools_discoverable() -> None:
         assert status == 200, body
         names = {tool["name"] for tool in json.loads(body)["result"]["tools"]}
         assert names == set(ALL_TOOLS)
-        assert len(names) == 8
+        assert len(names) == 9
 
 
 def test_http_allowlist_greps(monkeypatch, caplog) -> None:

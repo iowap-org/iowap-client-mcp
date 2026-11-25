@@ -5,8 +5,8 @@ Codex, any MCP-speaking agent). The node CLI (`node-cli --json`) remains the
 source of truth for relay auth and request execution — this server never
 touches tokens or speaks HTTP to the relay itself.
 
-v1 (T-003/T-004/T-235) registers the curated 8-tool set (see tools.py):
-read — relay_status, node_list, capabilities_list, docs, task_list
+v1 (T-003/T-004/T-235) registers the curated 9-tool set (see tools.py):
+read — relay_status, node_list, capabilities_list, docs, task_list, artifact_link
 write — task_submit, task_result, artifact_download
 HTTP-Transport (T-004): `--http` serves the same MCPServer instance via
 Streamable HTTP at ``/mcp`` (SDK-native ``streamable_http_app``, no
@@ -55,7 +55,8 @@ def build_server(token_verifier: Any | None = None, auth: Any | None = None) -> 
         instructions=(
             "Curated IOWAP toolkit over the IOWAP node CLI. Fleet visibility, "
             "capability discovery, filtered task list queries, task submit/"
-            "result tracking, artifact download, and live relay docs."
+            "result tracking, artifact download and short-lived download "
+            "links, and live relay docs."
         ),
         token_verifier=token_verifier,
         auth=auth,
