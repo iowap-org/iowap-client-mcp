@@ -57,8 +57,10 @@ only transport (spawned by the MCP client on the same host, no env, no port).
 
 **Container-HTTP lives in `iowap-node-mcp`** (T-037 package split): the
 Streamable HTTP `/mcp` surface with Bearer auth (`IOWAP_MCP_BEARER`,
-fail closed — the former `iowap-mcp --http`, T-004) moved into the sibling
-package [iowap-node-mcp](https://github.com/iowap-org/iowap-node-mcp),
+fail closed — the former `iowap-mcp --http`, T-004) moved into the
+container-MCP package [iowap-node-mcp](https://github.com/iowap-org/iowap-universal-node)
+(subdirectory `mcp/` — the package code lives in the universal-node
+flavour repo, not in its own repo),
 which imports this package's toolset as a library. If your node runs in a
 container (Docker Desktop topology), the image already installs
 `iowap-node-mcp` and its entrypoint starts `iowap-node-mcp` on port 7781;
